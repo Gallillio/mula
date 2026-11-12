@@ -59,7 +59,7 @@
   "scripts": {
     "start": "expo start",
     "web": "expo start --web",
-    "ios": "expo start --ios",
+    "ios": "expo run:ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest",
@@ -72,7 +72,9 @@
   "expo": {
     "autolinking": {
       "android": {
-        "exclude": ["expo-widgets"]
+        "exclude": [
+          "expo-widgets"
+        ]
       }
     }
   },

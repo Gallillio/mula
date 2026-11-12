@@ -9,6 +9,7 @@ import { getSettings } from '../../shared/settings/settingsStore';
 import { createTransaction } from '../../transactions/data/transactionsRepo';
 import type { TxInput } from '../../transactions/types';
 import { instapayFee } from '../../transactions/utils/instapay';
+import { findMatchingRecord, linkOwnTransfer } from './importStatement';
 import type { ArchiveCandidate, MerchantGroup } from './smsArchive';
 
 /** Kinds where money comes in; a group made only of these gets an income category. */
@@ -42,7 +43,7 @@ export type SmsImportPlan = {
   categoryByGroup: Record<string, ID | null>;
 };
 
-export type SmsImportResult = { created: number; alreadyImported: number; unmapped: number; failed: number };
+export type SmsImportResult = { created: number; alreadyImported: number; linked: number; unmapped: number; failed: number };
 
 async function inCurrency(amount: number, from: string, to: string, date: number) {
   if (from === to) return { amount, original: null as TxInput['original'] };
@@ -60,7 +61,7 @@ export async function importSmsHistory(plan: SmsImportPlan, onProgress?: (done: 
   const feeRule = getSettings().instapayFee;
   const groupByKey = new Map(plan.groups.map((g) => [g.key, g]));
   const payees = new Map<string, { id: ID; categoryBefore: ID | null; accountId: ID }>();
-  const result: SmsImportResult = { created: 0, alreadyImported: 0, unmapped: 0, failed: 0 };
+  const result: SmsImportResult = { created: 0, alreadyImported: 0, linked: 0, unmapped: 0, failed: 0 };
 
   const payeeFor = async (c: ArchiveCandidate, accountId: ID): Promise<ID | null> => {
     if (!c.groupKey) return null;
@@ -76,6 +77,8 @@ export async function importSmsHistory(plan: SmsImportPlan, onProgress?: (done: 
     return payee.id;
   };
 
+  // Records already in Mula from another source (a bank statement, Apple Pay, by hand) aren't added twice.
+  const matched = new Set<ID>();
   const list = [...plan.candidates].sort((a, b) => (a.parsed.occurredAt ?? 0) - (b.parsed.occurredAt ?? 0));
 
   for (let i = 0; i < list.length; i++) {
@@ -94,6 +97,19 @@ export async function importSmsHistory(plan: SmsImportPlan, onProgress?: (done: 
 
       const { kind, amount: parsedAmount, currency } = c.parsed;
       const date = c.parsed.occurredAt ?? Date.now();
+      if (currency === account.currency && (await findMatchingRecord(account.id, isOutflow(kind) ? 'out' : 'in', parsedAmount, date, { exceptRefPrefix: 'archive:', used: matched }))) {
+        result.alreadyImported++;
+        continue;
+      }
+      // The other half of a transfer between your own banks, already in Mula from the other bank.
+      if (
+        (kind === 'instapay_out' || kind === 'instapay_in' || kind === 'unknown_credit') &&
+        currency === account.currency &&
+        (await linkOwnTransfer(account.id, isOutflow(kind) ? 'out' : 'in', parsedAmount, date, { used: matched, cashAccountId: cash?.id ?? null }))
+      ) {
+        result.linked++;
+        continue;
+      }
       const transfer = Boolean(cash && cash.id !== account.id && isCashKind(kind));
       const from = transfer && kind === 'cash_deposit' ? cash! : account;
       const to = transfer ? (kind === 'cash_deposit' ? account : cash!) : null;

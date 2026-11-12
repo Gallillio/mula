@@ -425,9 +425,12 @@ export default function SmsImportPage() {
           />
           <Section>
             <ListRow title="Imported" value={formatCount(result.created)} testID="sms-result-created" />
+            {result.linked ? (
+              <ListRow title="Linked as transfers" subtitle="The other half of a transfer between your own accounts" value={formatCount(result.linked)} testID="sms-result-linked" />
+            ) : null}
             <ListRow
               title="Already in Mula"
-              subtitle="Imported before and left as they were"
+              subtitle="Imported before, or already there from a statement or by hand"
               value={formatCount(result.alreadyImported)}
               divider={Boolean(result.unmapped || result.failed)}
               testID="sms-result-existing"

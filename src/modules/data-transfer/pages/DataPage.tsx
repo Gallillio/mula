@@ -186,6 +186,14 @@ export default function DataPage() {
 
       <Section title="Bank history">
         <ListRow
+          testID="data-import-statement"
+          title="Import a bank statement"
+          subtitle="HSBC transaction downloads, checked against what Mula already has"
+          left={<IconTile icon="landmark" size={36} muted />}
+          chevron
+          onPress={idle ? () => router.push('/data/statement-import') : undefined}
+        />
+        <ListRow
           testID="data-import-sms"
           title={`Import ${SUPPORTED_BANK_NAMES} SMS history`}
           subtitle="Adds past payments from an exported message history"

@@ -1,12 +1,14 @@
 import { CIB } from './definitions/cib';
 import { GENERIC } from './definitions/generic';
+import { HSBC } from './definitions/hsbc';
+import { NBE } from './definitions/nbe';
 import type { BankDefinition, IgnoreRule } from './types';
 
 /**
  * Every bank Mula can read, in the order their templates are tried. Add yours above GENERIC
  * (see docs/adding-a-bank.md).
  */
-export const BANKS: readonly BankDefinition[] = [CIB, GENERIC];
+export const BANKS: readonly BankDefinition[] = [HSBC, NBE, CIB, GENERIC];
 
 /** Banks with their own definition (not the generic fallback). */
 export const SUPPORTED_BANKS = BANKS.filter((b) => b.senders.length > 0);
@@ -52,4 +54,4 @@ function joinNames(names: string[]): string {
 }
 
 export type { BankDefinition, IgnoreRule, ShortcutKeyword, SmsTemplate, TemplateMatch } from './types';
-export { CIB, GENERIC };
+export { CIB, GENERIC, HSBC, NBE };

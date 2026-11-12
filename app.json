@@ -8,7 +8,7 @@
     "scheme": "mula",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "io.github.khaledsharara.mula",
+      "bundleIdentifier": "com.gallillio.mula",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -17,7 +17,8 @@
         "light": "./assets/images/icon.png",
         "dark": "./assets/images/icon-dark.png",
         "tinted": "./assets/images/icon-tinted.png"
-      }
+      },
+      "appleTeamId": "JP384292LF"
     },
     "android": {
       "package": "io.github.khaledsharara.mula",
@@ -65,7 +66,7 @@
       [
         "expo-widgets",
         {
-          "groupIdentifier": "group.io.github.khaledsharara.mula",
+          "groupIdentifier": "group.com.gallillio.mula",
           "widgets": [
             {
               "name": "ReviewInbox",
