@@ -85,11 +85,11 @@ export const NBE: BankDefinition = {
     { reason: 'otp', regex: /كود التفعيل|الرقم السري|كلمة المرور|OTP/i },
     { reason: 'info', regex: /تركيد|ركود/ },
   ],
-  // Every transfer says تحويل; instant payments to shops say لحظيا; debit card payments say خصم.
+  // Every transfer says تحويل; instant payments to shops say لحظيا; debit card and ATM alerts say بطاقة الخصم.
   shortcutKeywords: [
     { word: 'تحويل', label: 'Transfers', testID: 'copy-keyword-nbe-transfer' },
     { word: 'لحظيا', label: 'Instant payments', testID: 'copy-keyword-nbe-payment' },
-    { word: 'خصم', label: 'Card payments and ATM', testID: 'copy-keyword-nbe-card' },
+    { word: 'بطاقة الخصم', label: 'Debit card and ATM', testID: 'copy-keyword-nbe-card' },
   ],
   example: 'تم تنفيذ تحويل لحظي من حسابكم رقم 9001 بمبلغ 200.00 جم إلى NOUR T****** P***** رقم مرجعي 123456789013 يوم 08-20 الساعة 00:46 للمزيد اتصل بـ 19623',
   notes: 'Dates have no year, so the time the SMS arrived is used. Outgoing transfers mask the recipient name.',
