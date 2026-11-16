@@ -179,4 +179,10 @@ export const migrations: string[] = [
   );
   `,
   SYNC_MIGRATION,
+  // 3: bank installment plans. A planned payment can carry a per-occurrence amount schedule
+  // (the falling interest of an installment plan) and the plan it belongs to.
+  `
+  ALTER TABLE recurring ADD COLUMN schedule TEXT;
+  ALTER TABLE recurring ADD COLUMN installment TEXT;
+  `,
 ];

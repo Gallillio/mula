@@ -178,6 +178,26 @@ export type Recurring = TxPreset & {
   remindDaysBefore: number;
   active: boolean;
   createdAt: number;
+  /** Amount of each occurrence (0-based); `amount` applies past its end or when absent. */
+  schedule: Minor[] | null;
+  /** Set when this series is the interest of a bank installment plan. */
+  installment: InstallmentPlan | null;
+};
+
+/**
+ * A card purchase the bank turned into monthly installments. The purchase itself stays one
+ * expense for its full price (that's what the card owes); the plan's series logs only the
+ * interest each statement adds, on the balance still unpaid.
+ */
+export type InstallmentPlan = {
+  purchaseId: ID | null;
+  principal: Minor;
+  monthly: Minor;
+  months: number;
+  /** What the bank quoted in total; months × monthly when not given. */
+  total: Minor;
+  /** Monthly rate on the unpaid balance, as a fraction (0.027 for 2.7%). */
+  monthlyRate: number;
 };
 
 export type Template = TxPreset & { id: ID; name: string; sortOrder: number; createdAt: number };

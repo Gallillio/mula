@@ -18,9 +18,23 @@ const GENERIC_AMOUNT = /(?:([A-Z]{3})\s*([\d,]+(?:\.\d{1,2})?)|([\d,]+(?:\.\d{1,
 const DEBIT_WORDS = /تم خصم|تم سحب|من حسابك|debited|charged|withdraw|purchase|paid/i;
 const CREDIT_WORDS = /تم إيداع|تم ايداع|إلى حسابك|الى حسابك|تم اضافة|تم إضافة|credited|received|deposit|refund/i;
 
+/**
+ * A card message about installments: a purchase converted into a plan, or a month's installment
+ * billed. Its amount is not new spending (the purchase was already recorded at full price), so it
+ * must never be filed as a charge; it waits in the inbox for the user (or Claude) to set up or
+ * check the plan.
+ */
+const INSTALLMENT_WORDS = /\binstal?l?ments?\b|\bEPP\b|easy payment plan|تقسيط|بالتقسيط|أقساط|اقساط/i;
+const CARD_WORDS = /\bcard\b|بطاق[ةه]/i;
+export const isInstallmentMessage = (text: string): boolean => INSTALLMENT_WORDS.test(text) && CARD_WORDS.test(text);
+
 export function parseBankSms(text: string, receivedAt: number = Date.now(), opts: { sender?: string | null } = {}): ParseResult {
   const body = normalizeDigits(text).replace(/ /g, ' ');
   const banks = banksFor(opts.sender);
+  if (isInstallmentMessage(body)) {
+    const ignored = ignoreReason(body, banks);
+    return ignored ? { status: 'ignored', reason: ignored } : { status: 'unrecognized' };
+  }
 
   for (const bank of banks) {
     for (const t of bank.templates) {

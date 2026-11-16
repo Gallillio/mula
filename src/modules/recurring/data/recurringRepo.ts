@@ -5,7 +5,7 @@ import type { TxInput, TxListItem } from '../../transactions/types';
 import { instapayFee } from '../../transactions/utils/instapay';
 import { all, bool, first, int, run, transaction, write } from '../../shared/db/client';
 import { notify, useLiveQuery } from '../../shared/db/live';
-import type { Account, Frequency, ID, Minor, PaymentType, Recurring, RecurringEnd, RecurringMode, TxType } from '../../shared/db/types';
+import type { Account, Frequency, ID, InstallmentPlan, Minor, PaymentType, Recurring, RecurringEnd, RecurringMode, TxType } from '../../shared/db/types';
 import { getSettings } from '../../shared/settings/settingsStore';
 import { newId } from '../../shared/utils/id';
 import { dueIndexes, nextDue, upcomingDates } from '../utils/recurrence';
@@ -35,7 +35,19 @@ type RecurringRow = {
   remind_days_before: number;
   active: number;
   created_at: number;
+  schedule: string | null;
+  installment: string | null;
 };
+
+function parseJson<T>(raw: string | null, ok: (v: unknown) => boolean): T | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return ok(v) ? (v as T) : null;
+  } catch {
+    return null;
+  }
+}
 
 const toRecurring = (r: RecurringRow): Recurring => ({
   id: r.id,
@@ -62,7 +74,22 @@ const toRecurring = (r: RecurringRow): Recurring => ({
   remindDaysBefore: r.remind_days_before,
   active: bool(r.active),
   createdAt: r.created_at,
+  schedule: parseJson<Minor[]>(r.schedule, (v) => Array.isArray(v) && v.every((x) => Number.isInteger(x))),
+  installment: parseJson<InstallmentPlan>(r.installment, (v) => !!v && typeof v === 'object' && typeof (v as InstallmentPlan).months === 'number'),
 });
+
+/** What occurrence `n` (0-based) books: its scheduled amount when the series has a schedule. */
+export const amountAt = (r: Pick<Recurring, 'amount' | 'schedule'>, n: number): Minor | null => r.schedule?.[n] ?? r.amount;
+
+/** The occurrence index whose due date is within a day of `date` (for items queued in the inbox). */
+export function occurrenceIndexAt(r: Recurring, date: number): number | null {
+  for (let n = 0; n < 600; n++) {
+    const d = nextDue(r, n);
+    if (d == null || d > date + 86_400_000) return null;
+    if (Math.abs(d - date) <= 86_400_000) return n;
+  }
+  return null;
+}
 
 export async function listRecurring(): Promise<Recurring[]> {
   const rows = await all<RecurringRow>('SELECT * FROM recurring ORDER BY active DESC, COALESCE(next_due, 9e15), name');
@@ -74,7 +101,12 @@ export async function getRecurring(id: ID): Promise<Recurring | null> {
   return r ? toRecurring(r) : null;
 }
 
-export type RecurringInput = Omit<Recurring, 'id' | 'occurrences' | 'nextDue' | 'createdAt'> & { id?: ID };
+export type RecurringInput = Omit<Recurring, 'id' | 'occurrences' | 'nextDue' | 'createdAt' | 'schedule' | 'installment'> & {
+  id?: ID;
+  /** Omitted: kept as it is (editing a series in the form doesn't drop an installment plan). */
+  schedule?: Minor[] | null;
+  installment?: InstallmentPlan | null;
+};
 
 export async function saveRecurring(input: RecurringInput): Promise<ID> {
   const id = input.id ?? newId();
@@ -87,17 +119,21 @@ export async function saveRecurring(input: RecurringInput): Promise<ID> {
     existing.interval !== input.interval;
   const occurrences = scheduleChanged ? 0 : existing.occurrences;
   const due = nextDue(input, occurrences);
+  const schedule = input.schedule !== undefined ? input.schedule : (existing?.schedule ?? null);
+  const installment = input.installment !== undefined ? input.installment : (existing?.installment ?? null);
   await write(
     ['recurring'],
     `INSERT OR REPLACE INTO recurring
       (id, name, type, amount, currency, account_id, to_account_id, category_id, payee_id, payment_type, note, is_instapay,
-       frequency, interval, start_date, end_type, end_date, end_count, occurrences, next_due, mode, remind_days_before, active, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       frequency, interval, start_date, end_type, end_date, end_count, occurrences, next_due, mode, remind_days_before, active, created_at,
+       schedule, installment)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, input.name.trim(), input.type, input.amount, input.currency, input.accountId, input.toAccountId, input.categoryId,
       input.payeeId, input.paymentType, input.note, int(input.isInstapay), input.frequency, Math.max(1, input.interval),
       input.startDate, input.endType, input.endDate, input.endCount, occurrences, due, input.mode, input.remindDaysBefore,
       int(input.active), existing?.createdAt ?? Date.now(),
+      schedule?.length ? JSON.stringify(schedule) : null, installment ? JSON.stringify(installment) : null,
     ],
   );
   return id;
@@ -168,8 +204,9 @@ export async function processDueRecurring(now = Date.now()): Promise<{ created: 
     const to = r.toAccountId ? (accounts.get(r.toAccountId) ?? null) : null;
     for (const n of due) {
       const date = nextDue(r, n)!;
-      const auto = r.mode === 'auto' && from && r.amount;
-      const booked = auto ? await bookingAmounts(r, from, to, date) : null;
+      const amountN = amountAt(r, n);
+      const auto = r.mode === 'auto' && from && amountN;
+      const booked = auto ? await bookingAmounts({ ...r, amount: amountN }, from, to, date) : null;
       if (booked) {
         await createTransaction({
           type: r.type,
@@ -205,14 +242,17 @@ export async function processDueRecurring(now = Date.now()): Promise<{ created: 
   return { created, queued };
 }
 
-export type Upcoming = { recurring: Recurring; date: number };
+export type Upcoming = { recurring: Recurring; date: number; amount: Minor | null };
 
 export async function listUpcoming(days = 30, now = Date.now()): Promise<Upcoming[]> {
   const to = now + days * 86_400_000;
   const out: Upcoming[] = [];
   for (const r of await listRecurring()) {
     if (!r.active) continue;
-    for (const date of upcomingDates(r, r.occurrences, now - 86_400_000, to, 3)) out.push({ recurring: r, date });
+    for (const date of upcomingDates(r, r.occurrences, now - 86_400_000, to, 3)) {
+      const n = r.schedule ? occurrenceIndexAt(r, date) : null;
+      out.push({ recurring: r, date, amount: n != null ? amountAt(r, n) : r.amount });
+    }
   }
   return out.sort((a, b) => a.date - b.date);
 }
@@ -227,7 +267,8 @@ export type ChargeAmounts = { charged: { amount: Minor; currency: string }; book
 export async function matchRecurring(m: ChargeAmounts, accountId: ID | null, at: number): Promise<Recurring | null> {
   const window = 3 * 86_400_000;
   for (const r of await listRecurring()) {
-    if (!r.active || !r.amount) continue;
+    // An installment plan's interest is never its own bank charge.
+    if (!r.active || !r.amount || r.installment) continue;
     if (accountId && r.accountId && r.accountId !== accountId) continue;
     const ccy = r.currency ?? m.booked.currency;
     const amount = ccy === m.charged.currency ? m.charged.amount : ccy === m.booked.currency ? m.booked.amount : null;

@@ -46,7 +46,7 @@ export default function RecurringListPage() {
             upcoming.map((u, i) => (
               <UpcomingRow
                 key={`${u.recurring.id}-${u.date}`}
-                r={u.recurring}
+                r={{ ...u.recurring, amount: u.amount }}
                 date={u.date}
                 category={u.recurring.categoryId ? lookups.categories.get(u.recurring.categoryId) : undefined}
                 accountCurrency={u.recurring.accountId ? lookups.accounts.get(u.recurring.accountId)?.currency : undefined}

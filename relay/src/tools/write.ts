@@ -9,6 +9,8 @@ import { ACCOUNT_COLORS, accountTypeMeta } from '../../../src/modules/accounts/u
 import { restoreCategory, saveCategory, setCategoryArchived, setCategoryNature } from '../../../src/modules/categories/data/categoriesRepo';
 import { CATEGORY_COLORS, isSystemCategory } from '../../../src/modules/categories/utils/categoryMeta';
 import { addRepayment, deleteDebt, getDebt, saveDebt, setDebtStatus } from '../../../src/modules/debts/data/debtsRepo';
+import { createInstallmentPlan, deleteInstallmentPlan, listInstallmentPlans } from '../../../src/modules/installments/data/installmentsRepo';
+import { planSchedule } from '../../../src/modules/installments/utils/schedule';
 import { buildSuggestion, confirmItem, dismissItem, getInboxItem, linkToExisting, restoreItem } from '../../../src/modules/inbox/data/inboxRepo';
 import { convert } from '../../../src/modules/integrations/utils/fx';
 import { deletePayee, findPayeeByName, mergePayees, removeAlias, setAlias, updatePayee } from '../../../src/modules/payees/data/payeesRepo';
@@ -874,6 +876,120 @@ const plannedTool: Tool = {
   },
 };
 
+/* ---------- Installment plans ---------- */
+
+const installmentsTool: Tool = {
+  name: 'manage_installments',
+  title: 'Manage bank installment plans',
+  description:
+    'Card purchases the bank converted into monthly installments. The purchase stays one expense for its full price (what the card owes; ' +
+    'the bank takes the whole amount off the available limit). create links a plan to that purchase and adds a planned payment on the same ' +
+    'card that logs only each month’s interest on the unpaid balance (falling every month), automatically by default. Statement payments ' +
+    'stay transfers. Bank messages about installments wait in the review inbox unparsed: never confirm one as a new charge; dismiss it ' +
+    'once the plan exists. list shows every plan with its month-by-month split; delete removes a plan’s planned payment (records already ' +
+    'logged stay).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['create', 'list', 'delete'] },
+      purchase_id: { type: 'string', description: 'create: the purchase transaction id (find_transactions)' },
+      monthly: { type: 'number', exclusiveMinimum: 0, description: 'create: the monthly installment, e.g. 274.07' },
+      months: { type: 'integer', minimum: 1, maximum: 120 },
+      total: { type: 'number', exclusiveMinimum: 0, description: 'create: the bank’s quoted total (default months × monthly)' },
+      principal: { type: 'number', exclusiveMinimum: 0, description: 'create: amount financed (default the purchase amount)' },
+      first_due: { type: 'string', description: 'create: date of the first statement that bills an installment (default a month after the purchase)' },
+      mode: { type: 'string', enum: ['auto', 'confirm'], description: 'create: log the interest automatically (default) or ask first' },
+      id: { type: 'string', description: 'delete: the plan’s planned payment id (from list)' },
+    },
+    required: ['action'],
+    additionalProperties: false,
+  },
+  annotations: DESTRUCTIVE,
+  async run(args) {
+    const lk = await loadLookups();
+    const action = oneOf(args.action, 'action', ['create', 'list', 'delete'] as const);
+    if (!action) throw new InputError('action is required');
+
+    if (action === 'list') {
+      const plans = await listInstallmentPlans();
+      return ok({
+        installment_plans: plans.map((r) => {
+          const p = r.installment!;
+          return {
+            id: r.id,
+            name: r.name,
+            purchase_id: p.purchaseId,
+            account: r.accountId ? lk.accountById.get(r.accountId)?.name : null,
+            principal: major(p.principal),
+            monthly: major(p.monthly),
+            months: p.months,
+            total: major(p.total),
+            interest_total: major(p.total - p.principal),
+            monthly_rate_percent: Math.round(p.monthlyRate * 100000) / 1000,
+            installments_done: r.occurrences,
+            next_due: r.nextDue ? formatLocal(r.nextDue, lk.tz).slice(0, 10) : null,
+            mode: r.mode === 'auto' ? 'logged automatically' : 'asks to confirm',
+            schedule: planSchedule(p).map((row) => ({
+              month: row.n + 1,
+              installment: major(row.installment),
+              interest: major(row.interest),
+              principal: major(row.principal),
+              still_owed: major(row.remaining),
+            })),
+          };
+        }),
+      });
+    }
+
+    if (action === 'delete') {
+      const plans = await listInstallmentPlans();
+      const plan = plans.find((r) => r.id === args.id);
+      if (!plan) throw new InputError('id must be an installment plan id (see action list)');
+      return changed('manage_installments', async () => {
+        await deleteInstallmentPlan(plan.id);
+        return { value: { deleted: plan.name }, summary: `Deleted installment plan ${plan.name}` };
+      });
+    }
+
+    const purchaseId = text(args.purchase_id, 'purchase_id', 100);
+    if (!purchaseId) throw new InputError('purchase_id is required');
+    const purchase = await getTransaction(purchaseId);
+    if (!purchase || purchase.type !== 'expense') throw new InputError('purchase_id must be an expense (see find_transactions)');
+    const monthly = amountIn(args.monthly, 'monthly');
+    if (!monthly) throw new InputError('monthly is required');
+    const months = args.months != null ? Math.round(Number(args.months)) : NaN;
+    if (!Number.isFinite(months) || months < 1 || months > 120) throw new InputError('months must be 1 to 120');
+    const total = amountIn(args.total, 'total');
+    const principal = amountIn(args.principal, 'principal');
+    if ((total ?? monthly * months) < (principal ?? purchase.amount)) throw new InputError('The plan totals less than the amount financed');
+    const firstDue = momentIn(args.first_due, lk, 'first_due', 'noon');
+    const mode = oneOf(args.mode, 'mode', ['auto', 'confirm'] as const) ?? 'auto';
+    return changed('manage_installments', async () => {
+      let res;
+      try {
+        res = await createInstallmentPlan({ purchaseId, monthly, months, total, principal, firstDue, mode });
+      } catch (e) {
+        throw new InputError(e instanceof Error ? e.message : String(e));
+      }
+      const rows = planSchedule(res.plan);
+      return {
+        value: {
+          installment_plan: {
+            id: res.recurringId,
+            purchase_id: purchaseId,
+            total: major(res.plan.total),
+            interest_total: major(res.plan.total - res.plan.principal),
+            monthly_rate_percent: Math.round(res.plan.monthlyRate * 100000) / 1000,
+            interest_by_month: rows.map((r) => major(r.interest)),
+            ...(res.recurringId ? {} : { note: 'Interest-free: nothing to log each month' }),
+          },
+        },
+        summary: `Set up a ${months}-month installment plan`,
+      };
+    });
+  },
+};
+
 /* ---------- Debts ---------- */
 
 const debtsTool: Tool = {
@@ -1034,4 +1150,4 @@ const undoTool: Tool = {
   },
 };
 
-export const writeTools: Tool[] = [...transactionTools, reviewTool, accountsTool, categoriesTool, payeesTool, plannedTool, debtsTool, settingsTool, undoTool];
+export const writeTools: Tool[] = [...transactionTools, reviewTool, accountsTool, categoriesTool, payeesTool, plannedTool, installmentsTool, debtsTool, settingsTool, undoTool];

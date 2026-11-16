@@ -81,7 +81,7 @@ export const readTools: Tool[] = [
         name: u.recurring.name,
         date: formatDay(u.date, lk.tz),
         type: u.recurring.type,
-        amount: major(u.recurring.amount),
+        amount: major(u.amount),
         currency: u.recurring.currency,
         mode: u.recurring.mode === 'auto' ? 'logged automatically' : 'asks to confirm',
       }));
@@ -480,12 +480,24 @@ export const readTools: Tool[] = [
           active: r.active,
           ...(r.isInstapay ? { instapay: true } : {}),
           ...(r.note ? { note: r.note } : {}),
+          ...(r.installment
+            ? {
+                installment_plan: {
+                  purchase_id: r.installment.purchaseId,
+                  months: r.installment.months,
+                  monthly: major(r.installment.monthly),
+                  total: major(r.installment.total),
+                  logs: 'only the interest each month',
+                  interest_by_month: (r.schedule ?? []).map((x) => major(x)),
+                },
+              }
+            : {}),
         })),
         next_30_days: upcoming.map((u) => ({
           id: u.recurring.id,
           name: u.recurring.name,
           date: formatDay(u.date, lk.tz),
-          amount: major(u.recurring.amount),
+          amount: major(u.amount),
           currency: u.recurring.currency,
         })),
         templates: templates.map((t) => ({

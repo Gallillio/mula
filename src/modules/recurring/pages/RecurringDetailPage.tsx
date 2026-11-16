@@ -17,7 +17,10 @@ import { TransactionRow } from '../../transactions/components/TransactionRow';
 import { useLookups } from '../../transactions/data/useLookups';
 import { paymentTypeLabel } from '../../transactions/types';
 import { RecurringAmount, RecurringIcon } from '../components/RecurringRows';
+import { planSchedule } from '../../installments/utils/schedule';
+import { formatMoney } from '../../shared/utils/money';
 import {
+  amountAt,
   missedWhilePaused,
   processDueRecurring,
   setRecurringActive,
@@ -154,6 +157,35 @@ export default function RecurringDetailPage() {
         {r.note ? <ListRow title="Note" value={r.note} divider={false} /> : null}
       </Section>
 
+      {r.installment ? (
+        <Section
+          title="Installment plan"
+          footer="The purchase is recorded at its full price. This logs only the interest each statement adds on what’s still unpaid."
+        >
+          <ListRow title="Monthly installment" value={formatMoney(r.installment.monthly, { currency: r.currency ?? account?.currency })} />
+          <ListRow title="Months" value={`${r.installment.months}, ${Math.max(0, r.installment.months - r.occurrences)} left`} />
+          <ListRow title="Total" value={formatMoney(r.installment.total, { currency: r.currency ?? account?.currency })} />
+          <ListRow title="Interest" value={formatMoney(r.installment.total - r.installment.principal, { currency: r.currency ?? account?.currency })} />
+          <ListRow
+            title="Still owed"
+            value={formatMoney(
+              r.occurrences > 0 ? (planSchedule(r.installment)[Math.min(r.occurrences, r.installment.months) - 1]?.remaining ?? 0) : r.installment.principal,
+              { currency: r.currency ?? account?.currency },
+            )}
+            divider={Boolean(r.installment.purchaseId)}
+          />
+          {r.installment.purchaseId ? (
+            <ListRow
+              title="See the purchase"
+              chevron
+              divider={false}
+              onPress={() => router.push({ pathname: '/add', params: { id: r.installment!.purchaseId! } })}
+              testID="installment-purchase"
+            />
+          ) : null}
+        </Section>
+      ) : null}
+
       <Section title="Next" footer={!r.active && next.length ? 'Paused. These dates wait until you resume it.' : undefined}>
         {next.length ? (
           next.map((d, i) => (
@@ -161,7 +193,7 @@ export default function RecurringDetailPage() {
               key={d}
               title={dueDayLabel(d)}
               subtitle={relativeDays(d)}
-              right={<RecurringAmount r={r} baseCurrency={baseCurrency} accountCurrency={account?.currency} />}
+              right={<RecurringAmount r={{ ...r, amount: amountAt(r, r.occurrences + i) }} baseCurrency={baseCurrency} accountCurrency={account?.currency} />}
               divider={i < next.length - 1}
             />
           ))

@@ -139,6 +139,7 @@ export const catId = (key: string): string => `cat_${key}`;
 /** Category IDs the app logic relies on. */
 export const SYSTEM_CATEGORIES = {
   fees: catId('financial.fees'),
+  loanInterest: catId('financial.loan'),
   refunds: catId('income.refunds'),
   missing: catId('others.missing'),
   taxi: catId('transport.taxi'),

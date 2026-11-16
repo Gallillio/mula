@@ -3,7 +3,7 @@ import { openDebtsForPayee, type DebtWithProgress } from '../../debts/data/debts
 import { convert } from '../../integrations/utils/fx';
 import { findCategoryByHint } from '../../categories/data/categoriesRepo';
 import { findOrCreatePayee, resolveAlias, setAlias } from '../../payees/data/payeesRepo';
-import { bookingAmounts, getRecurring, matchRecurring } from '../../recurring/data/recurringRepo';
+import { amountAt, bookingAmounts, getRecurring, matchRecurring, occurrenceIndexAt } from '../../recurring/data/recurringRepo';
 import { createTransaction, listTransactions } from '../../transactions/data/transactionsRepo';
 import type { TxInput, TxListItem } from '../../transactions/types';
 import { instapayFee } from '../../transactions/utils/instapay';
@@ -323,10 +323,13 @@ async function recurringSuggestion(item: InboxItem): Promise<Suggestion> {
   const account = accounts.find((a) => a.id === r?.accountId) ?? null;
   const toAccount = accounts.find((a) => a.id === r?.toAccountId) ?? null;
   const date = item.receivedAt;
+  // A scheduled series (installment interest) books this occurrence's own amount.
+  const n = r?.schedule ? occurrenceIndexAt(r, date) : null;
+  const scheduled = r ? (n != null ? amountAt(r, n) : r.amount) : null;
   // Charged in another currency than the account's: book it converted at that day's rate.
-  const booked = r && account && r.amount ? await bookingAmounts(r, account, toAccount, date) : null;
-  const unconverted = r?.amount && account && !booked ? { amount: r.amount, currency: r.currency ?? account.currency } : null;
-  const amount = booked?.amount ?? (unconverted ? 0 : (r?.amount ?? 0));
+  const booked = r && account && scheduled ? await bookingAmounts({ ...r, amount: scheduled }, account, toAccount, date) : null;
+  const unconverted = scheduled && account && !booked ? { amount: scheduled, currency: r?.currency ?? account.currency } : null;
+  const amount = booked?.amount ?? (unconverted ? 0 : (scheduled ?? 0));
   const original = booked?.original ?? null;
   const type = r?.type ?? 'expense';
   return {

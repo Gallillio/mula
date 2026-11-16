@@ -166,9 +166,9 @@ export default function HomePage() {
               subtitle={dayLabel(u.date)}
               left={<IconTile icon="repeat" muted size={36} />}
               right={
-                u.recurring.amount ? (
+                u.amount ? (
                   <RecurringAmount
-                    r={u.recurring}
+                    r={{ ...u.recurring, amount: u.amount }}
                     baseCurrency={base}
                     accountCurrency={u.recurring.accountId ? lookups.accounts.get(u.recurring.accountId)?.currency : undefined}
                   />

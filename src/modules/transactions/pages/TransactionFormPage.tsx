@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 
@@ -645,6 +645,18 @@ export default function TransactionFormPage() {
           }}
           testID="menu-template"
         />
+        {existing && existing.type === 'expense' && !existing.parentId ? (
+          <ListRow
+            title="Paid in installments"
+            subtitle="The bank split this into monthly payments"
+            left={<Icon name="calendar" size={20} />}
+            onPress={() => {
+              setSheet(null);
+              router.push({ pathname: '/installments/new', params: { purchaseId: existing.id } });
+            }}
+            testID="menu-installments"
+          />
+        ) : null}
         {existing ? <ListRow title="Delete record" destructive left={<Icon name="trash" size={20} tone="danger" />} onPress={() => { setSheet(null); void remove(); }} testID="menu-delete" /> : null}
       </BottomSheet>
       <BottomSheet
