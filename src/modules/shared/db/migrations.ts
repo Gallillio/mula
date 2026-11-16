@@ -185,4 +185,8 @@ export const migrations: string[] = [
   ALTER TABLE recurring ADD COLUMN schedule TEXT;
   ALTER TABLE recurring ADD COLUMN installment TEXT;
   `,
+  // 4: who you spent it with. A JSON array of payee ids (people), or NULL when it was just you.
+  `
+  ALTER TABLE transactions ADD COLUMN people TEXT;
+  `,
 ];

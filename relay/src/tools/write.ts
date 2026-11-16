@@ -44,6 +44,7 @@ import {
   resolveAccount,
   resolveCategory,
   resolvePayee,
+  resolvePeople,
   text,
   txOut,
   type Lookups,
@@ -79,6 +80,12 @@ const txFields = {
   instapay: { type: 'boolean', description: 'Sent or received with InstaPay; outgoing ones get the InstaPay fee' },
   fee: { type: 'number', minimum: 0, description: 'A fee to book as its own expense (overrides the InstaPay fee; 0 for none)' },
   nature: { type: 'string', enum: [...NATURES], description: 'Override need/want for this record' },
+  people: {
+    type: ['array', 'null'],
+    items: { type: 'string' },
+    maxItems: 20,
+    description: 'Who the user spent it with (names or ids), e.g. ["Jana", "Khaled"]. New names become people. On edits this replaces the list; [] or null means just the user',
+  },
 };
 
 /** What a transaction would be, from Claude's fields over an optional existing record. */
@@ -168,6 +175,7 @@ async function buildTx(item: Record<string, unknown>, lk: Lookups, existing: (Tr
           : (existing?.feeTotal ?? 0);
 
   const note = item.note === null ? null : (text(item.note, 'note', 1000) ?? existing?.note ?? null);
+  const people = (await resolvePeople(item.people, lk)) ?? existing?.people ?? [];
   const natureArg = oneOf(item.nature, 'nature', NATURES);
   return {
     type,
@@ -186,6 +194,7 @@ async function buildTx(item: Record<string, unknown>, lk: Lookups, existing: (Tr
     original,
     recurringId: existing?.recurringId ?? null,
     debtId: existing?.debtId ?? null,
+    people: type === 'transfer' ? [] : people,
     source: existing?.source ?? 'claude',
     sourceRef: existing?.sourceRef ?? null,
   };
@@ -205,7 +214,8 @@ const transactionTools: Tool[] = [
     title: 'Add transactions',
     description:
       'Adds expenses, income or transfers (up to 100 per call) straight into Mula. Use names from get_catalog; ' +
-      'without a category, an expense goes to Others › Missing. InstaPay transfers out get the InstaPay fee automatically.',
+      'without a category, an expense goes to Others › Missing. InstaPay transfers out get the InstaPay fee automatically. ' +
+      'Use people for who the user spent it with (a dinner with friends).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -241,7 +251,7 @@ const transactionTools: Tool[] = [
     title: 'Edit transactions',
     description:
       'Changes existing records (up to 200 per call, e.g. re-categorize every Uber ride). Give each record’s id and only the fields to change; ' +
-      'use null for note or payee to clear them. Changing an InstaPay amount recalculates its fee.',
+      'use null for note or payee to clear them. Changing an InstaPay amount recalculates its fee. people replaces who it was spent with.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -315,7 +325,8 @@ const transactionTools: Tool[] = [
 
 function describe(t: ReturnType<typeof txOut>): string {
   const who = t.payee ? ` at ${t.payee}` : t.to_account ? ` to ${t.to_account}` : '';
-  return `${t.type} ${t.currency} ${t.amount}${who} (${t.date.slice(0, 10)})`;
+  const withWhom = t.with?.length ? ` with ${t.with.join(', ')}` : '';
+  return `${t.type} ${t.currency} ${t.amount}${who}${withWhom} (${t.date.slice(0, 10)})`;
 }
 
 /* ---------- Review inbox ---------- */
@@ -325,7 +336,7 @@ const reviewTool: Tool = {
   title: 'Resolve review items',
   description:
     'Confirms, dismisses or links items from list_review_inbox (up to 100 per call). Confirm files the suggestion, with any fields ' +
-    'you override (same fields as add_transactions); outgoing InstaPay needs a payee. A new name for a bank name is remembered for next time ' +
+    'you override (same fields as add_transactions, including people for who the user spent it with); outgoing InstaPay needs a payee. A new name for a bank name is remembered for next time ' +
     'unless remember_name is false. Link marks an item as already recorded by an existing transaction.',
   inputSchema: {
     type: 'object',
@@ -443,6 +454,7 @@ function draftAsTx(d: TxInput, currency: string): Transaction {
     baseAmount: d.amount,
     recurringId: d.recurringId ?? null,
     debtId: d.debtId ?? null,
+    people: d.people ?? [],
     source: d.source ?? 'sms',
     sourceRef: d.sourceRef ?? null,
     createdAt: Date.now(),

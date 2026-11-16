@@ -8,6 +8,7 @@ import { Text } from '../../shared/components/Text';
 import type { Account, Category, ID, Payee } from '../../shared/db/types';
 import { formatMoney } from '../../shared/utils/money';
 import type { TxListItem } from '../types';
+import { peopleLabel } from '../utils/people';
 
 export type RowLookups = {
   accounts: Map<ID, Account>;
@@ -36,6 +37,8 @@ export function TransactionRow({ tx, lookups, onPress, showAccount = true, divid
   const parts: string[] = [];
   if (!isTransfer && cat && (payee || tx.isInstapay)) parts.push(cat.name);
   if (tx.isInstapay && (payee || isTransfer)) parts.push('InstaPay');
+  const withNames = (tx.people ?? []).map((id) => lookups.payees.get(id)?.name).filter((n): n is string => Boolean(n));
+  if (withNames.length) parts.push(`with ${peopleLabel(withNames)}`);
   if (tx.debtId) parts.push(tx.type === 'expense' ? 'Debt' : 'Debt repayment');
   if (showAccount && !isTransfer && account) parts.push(account.name);
   if (tx.note && !payee) parts.push(tx.note);

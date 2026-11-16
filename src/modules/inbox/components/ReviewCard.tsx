@@ -4,6 +4,7 @@ import { ScrollView, View } from 'react-native';
 import { saveAccount, useAccounts } from '../../accounts/data/accountsRepo';
 import { useCategories } from '../../categories/data/categoriesRepo';
 import { recentInstapayPayees } from '../../payees/data/payeesRepo';
+import { PeopleChips } from '../../transactions/components/PeopleChips';
 import { AccountPicker, CategoryPicker, PayeePicker, type PayeeChoice } from '../../transactions/components/Pickers';
 import { Chip } from '../../shared/components/Chip';
 import { toast } from '../../shared/components/Feedback';
@@ -25,6 +26,8 @@ export type CardChoice = {
   categoryId: ID | null;
   payee: PayeeChoice | null;
   account: Account | null;
+  /** Who you spent it with. */
+  people: PayeeChoice[];
 };
 
 type Props = {
@@ -160,6 +163,12 @@ export function ReviewCard({ s, choice, onChange }: Props) {
             ))}
             <Chip label="Someone else" icon="plus" onPress={() => setSheet('payee')} testID="review-someone-else" />
           </View>
+        </View>
+      ) : null}
+
+      {s.draft.type === 'expense' ? (
+        <View className="mt-5">
+          <PeopleChips value={choice.people} onChange={(people) => onChange({ ...choice, people })} testID="review-people" />
         </View>
       ) : null}
 

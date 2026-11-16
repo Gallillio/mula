@@ -31,11 +31,32 @@ export type TxRow = {
   base_amount: number;
   recurring_id: string | null;
   debt_id: string | null;
+  people?: string | null;
   source: TxSource;
   source_ref: string | null;
   created_at: number;
   updated_at: number;
 };
+
+/** The stored people list (JSON array of payee ids) as ids; tolerant of NULL or bad JSON. */
+export function parsePeople(raw: string | null | undefined): ID[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Ids as stored: unique, in the order given, NULL when there are none. */
+export function peopleJson(ids: readonly ID[] | null | undefined): string | null {
+  const unique = [...new Set((ids ?? []).filter(Boolean))];
+  return unique.length ? JSON.stringify(unique) : null;
+}
+
+/** SQL that is true when the record `alias` lists the person bound to the next `?`. */
+export const withPersonSql = (alias = 't') => `EXISTS (SELECT 1 FROM json_each(COALESCE(${alias}.people, '[]')) WHERE value = ?)`;
 
 export const rowToTx = (r: TxRow): Transaction => ({
   id: r.id,
@@ -59,6 +80,7 @@ export const rowToTx = (r: TxRow): Transaction => ({
   baseAmount: r.base_amount,
   recurringId: r.recurring_id,
   debtId: r.debt_id,
+  people: parsePeople(r.people),
   source: r.source,
   sourceRef: r.source_ref,
   createdAt: r.created_at,
@@ -77,8 +99,8 @@ async function insertRow(id: ID, t: TxInput, currency: string, baseAmount: numbe
     `INSERT INTO transactions
       (id, type, amount, currency, account_id, to_account_id, to_amount, category_id, payee_id, payment_type, date, note,
        is_instapay, parent_id, nature_override, original_amount, original_currency, fx_rate, base_amount,
-       recurring_id, debt_id, source, source_ref, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       recurring_id, debt_id, people, source, source_ref, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       t.type,
@@ -101,6 +123,8 @@ async function insertRow(id: ID, t: TxInput, currency: string, baseAmount: numbe
       baseAmount,
       t.recurringId ?? null,
       t.debtId ?? null,
+      // Fee rows belong to their parent record; only the record itself lists people.
+      parentId ? null : peopleJson(t.people),
       t.source ?? 'manual',
       t.sourceRef ?? null,
       now,
@@ -152,7 +176,9 @@ export async function updateTransaction(id: ID, t: TxInput): Promise<void> {
   await transaction(['transactions', 'payees'], async () => {
     await run('DELETE FROM transactions WHERE parent_id = ?', [id]);
     await run('DELETE FROM transactions WHERE id = ?', [id]);
-    await insertRow(id, { ...t, source: existing?.source ?? t.source, sourceRef: existing?.sourceRef ?? t.sourceRef }, account.currency, base, null, now);
+    // Callers that don't mention people (statement imports, older code) keep the record's list.
+    const people = t.people === undefined ? (existing?.people ?? null) : t.people;
+    await insertRow(id, { ...t, people, source: existing?.source ?? t.source, sourceRef: existing?.sourceRef ?? t.sourceRef }, account.currency, base, null, now);
     if (existing) await run('UPDATE transactions SET created_at = ? WHERE id = ?', [existing.createdAt, id]);
     await writeFee(id, t, account.currency, now);
   });
@@ -198,6 +224,10 @@ function filterSql(f: TxFilter): [string, Params] {
     where.push('t.debt_id = ?');
     params.push(f.debtId);
   }
+  if (f.withPersonId) {
+    where.push(withPersonSql('t'));
+    params.push(f.withPersonId);
+  }
   if (f.types?.length) {
     where.push(`t.type IN (${f.types.map(() => '?').join(',')})`);
     params.push(...f.types);
@@ -212,8 +242,11 @@ function filterSql(f: TxFilter): [string, Params] {
   }
   if (f.search?.trim()) {
     const q = `%${f.search.trim()}%`;
-    where.push(`(t.note LIKE ? OR p.name LIKE ? OR c.name LIKE ? OR CAST(t.amount / 100.0 AS TEXT) LIKE ?)`);
-    params.push(q, q, q, q);
+    where.push(
+      `(t.note LIKE ? OR p.name LIKE ? OR c.name LIKE ? OR CAST(t.amount / 100.0 AS TEXT) LIKE ?
+        OR EXISTS (SELECT 1 FROM json_each(COALESCE(t.people, '[]')) j JOIN payees wp ON wp.id = j.value WHERE wp.name LIKE ?))`,
+    );
+    params.push(q, q, q, q, q);
   }
   return [where.join(' AND '), params];
 }
@@ -255,6 +288,24 @@ export async function repairBaseAmounts(): Promise<void> {
       if (rate != null && rate !== 1) await run('UPDATE transactions SET base_amount = ? WHERE id = ?', [Math.round(r.amount * rate), r.id]);
     }
   });
+}
+
+export type SpentTogether = { records: number; spent: number; latest: number | null };
+
+/** What you spent with someone (expenses only, in the base currency, fees included). */
+export async function getSpentTogether(personId: ID): Promise<SpentTogether> {
+  const r = await first<{ n: number; spent: number; latest: number | null }>(
+    `SELECT COUNT(*) AS n,
+            COALESCE(SUM(t.base_amount + (SELECT COALESCE(SUM(x.base_amount), 0) FROM transactions x WHERE x.parent_id = t.id)), 0) AS spent,
+            MAX(t.date) AS latest
+     FROM transactions t WHERE t.parent_id IS NULL AND t.type = 'expense' AND ${withPersonSql('t')}`,
+    [personId],
+  );
+  return { records: r?.n ?? 0, spent: r?.spent ?? 0, latest: r?.latest ?? null };
+}
+
+export function useSpentTogether(personId: ID | null | undefined) {
+  return useLiveQuery(['transactions'], async () => (personId ? getSpentTogether(personId) : { records: 0, spent: 0, latest: null }), [personId]);
 }
 
 export function useTransactions(f: TxFilter, deps: unknown[]) {

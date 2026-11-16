@@ -5,6 +5,7 @@ import { useAccounts, useBalances } from '../../accounts/data/accountsRepo';
 import { buildTree, useCategories } from '../../categories/data/categoriesRepo';
 import { usePayees } from '../../payees/data/payeesRepo';
 import { BottomSheet } from '../../shared/components/BottomSheet';
+import { Button } from '../../shared/components/Button';
 import { Icon } from '../../shared/components/Icon';
 import { Divider, ListRow } from '../../shared/components/List';
 import { Avatar, IconTile } from '../../shared/components/Misc';
@@ -276,6 +277,127 @@ export function PayeePicker({
       ))}
       {selectedName ? (
         <ListRow title="Clear" destructive divider={false} onPress={() => choose(null)} />
+      ) : null}
+    </BottomSheet>
+  );
+}
+
+/* ---------- People (spent with) ---------- */
+
+/**
+ * Pick everyone you spent it with. People (payees marked as a person) are listed; search also
+ * finds places and offers to add a new name. Nothing is saved until Done.
+ */
+export function PeoplePicker({
+  visible,
+  onClose,
+  selected,
+  onDone,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  selected: PayeeChoice[];
+  onDone: (people: PayeeChoice[]) => void;
+}) {
+  const { data: payees } = usePayees();
+  const [query, setQuery] = useState('');
+  const [draft, setDraft] = useState<PayeeChoice[]>(selected);
+  const [wasVisible, setWasVisible] = useState(visible);
+  // Start from the current choice each time the sheet opens.
+  if (visible !== wasVisible) {
+    setWasVisible(visible);
+    if (visible) {
+      setDraft(selected);
+      setQuery('');
+    }
+  }
+  const q = query.trim();
+  const key = (c: PayeeChoice) => c.payeeId ?? `new:${c.name.toLowerCase()}`;
+  const isOn = (c: PayeeChoice) => draft.some((d) => key(d) === key(c));
+  const toggle = (c: PayeeChoice) => setDraft((d) => (d.some((x) => key(x) === key(c)) ? d.filter((x) => key(x) !== key(c)) : [...d, c]));
+
+  const people = (payees ?? []).filter((p) => (q ? matches(p.name, q) : p.kind === 'person')).slice(0, 80);
+  const exact = (payees ?? []).some((p) => p.name.toLowerCase() === q.toLowerCase()) || draft.some((d) => d.name.toLowerCase() === q.toLowerCase());
+  // New names added in this sheet stay visible so they can be unticked.
+  const added = draft.filter((d) => !d.payeeId);
+
+  const done = () => {
+    onDone(draft);
+    setQuery('');
+    onClose();
+  };
+
+  return (
+    <BottomSheet
+      visible={visible}
+      onClose={() => {
+        setQuery('');
+        onClose();
+      }}
+      title="Spent with"
+      subtitle="Everyone who was there. You can pick more than one."
+      tall
+      testID="people-picker"
+      footer={
+        <View className="flex-row gap-2.5">
+          {draft.length ? (
+            <View className="flex-1">
+              <Button label="Just me" variant="secondary" size="lg" full onPress={() => setDraft([])} testID="people-clear" />
+            </View>
+          ) : null}
+          <View className="flex-[1.4]">
+            <Button label={draft.length ? `Done, ${draft.length} selected` : 'Done'} size="lg" full onPress={done} testID="people-done" />
+          </View>
+        </View>
+      }
+    >
+      <SearchBox value={query} onChange={setQuery} placeholder="Search or add a name" />
+      {q && !exact ? (
+        <ListRow
+          testID="people-create"
+          title={`Add “${q}”`}
+          subtitle="Saved as a person so you can pick them next time"
+          left={
+            <View className="h-9 w-9 items-center justify-center rounded-full bg-accent-soft">
+              <Icon name="plus" size={18} tone="accent" />
+            </View>
+          }
+          onPress={() => {
+            toggle({ payeeId: null, name: q });
+            setQuery('');
+          }}
+        />
+      ) : null}
+      {!q
+        ? added.map((c) => (
+            <ListRow
+              key={key(c)}
+              title={c.name}
+              subtitle="New"
+              left={<Avatar name={c.name} size={36} />}
+              right={<Icon name="check" size={18} tone="accent" />}
+              onPress={() => toggle(c)}
+            />
+          ))
+        : null}
+      {people.map((p, i) => {
+        const c = { payeeId: p.id, name: p.name };
+        return (
+          <ListRow
+            key={p.id}
+            testID={`people-option-${p.name}`}
+            title={p.name}
+            left={p.kind === 'person' ? <Avatar name={p.name} size={36} /> : <IconTile icon="store" size={36} muted />}
+            right={isOn(c) ? <Icon name="check" size={18} tone="accent" /> : null}
+            divider={i < people.length - 1}
+            onPress={() => toggle(c)}
+          />
+        );
+      })}
+      {!q && !people.length && !added.length ? (
+        <Text variant="label" weight="regular" tone="mist" className="px-5 pt-2">
+          Type a name above to add someone.
+        </Text>
       ) : null}
     </BottomSheet>
   );

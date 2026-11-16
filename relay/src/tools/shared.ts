@@ -159,6 +159,32 @@ export async function resolvePayee(v: unknown, lk: Lookups, opts: { create: bool
   return created;
 }
 
+/**
+ * People you spent with, by name or id. `undefined` means "not given" (keep what's there);
+ * null or [] means just you. New names become person payees.
+ */
+export async function resolvePeople(v: unknown, lk: Lookups, field = 'people'): Promise<ID[] | undefined> {
+  if (v === undefined) return undefined;
+  if (v === null) return [];
+  if (!Array.isArray(v)) throw new InputError(`${field} must be a list of names or ids, e.g. ["Jana", "Khaled"]`);
+  if (v.length > 20) throw new InputError(`${field} can list at most 20 people`);
+  const ids: ID[] = [];
+  for (const [i, x] of v.entries()) {
+    const p = await resolvePayee(x, lk, { create: true, kind: 'person' }, `${field}[${i}]`);
+    if (p && !ids.includes(p.id)) ids.push(p.id);
+  }
+  return ids;
+}
+
+/** A person (or any payee) by id or exact name, for filters; null when nobody matches. */
+export function findPerson(v: unknown, lk: Lookups, field: string): Payee | null {
+  const key = text(v, field);
+  if (!key) return null;
+  return lk.payeeById.get(key) ?? lk.payees.find((p) => norm(p.name) === norm(key)) ?? null;
+}
+
+export const peopleNames = (ids: readonly ID[] | undefined, lk: Lookups): string[] => (ids ?? []).map((id) => lk.payeeById.get(id)?.name ?? id);
+
 export function momentIn(v: unknown, lk: Lookups, field: string, edge: 'start' | 'end' | 'noon' = 'noon'): number | null {
   if (v === undefined || v === null || v === '') return null;
   const t = parseMoment(v, lk.tz, edge);
@@ -183,6 +209,7 @@ export function txOut(t: Transaction & { feeTotal?: number }, lk: Lookups) {
     ...(t.toAccountId ? { to_account: lk.accountById.get(t.toAccountId)?.name ?? t.toAccountId, to_amount: major(t.toAmount) } : {}),
     ...(t.categoryId ? { category: categoryPath(t.categoryId, lk) } : {}),
     ...(t.payeeId ? { payee: lk.payeeById.get(t.payeeId)?.name ?? t.payeeId } : {}),
+    ...(t.people?.length ? { with: peopleNames(t.people, lk) } : {}),
     ...(t.note ? { note: t.note } : {}),
     payment: t.paymentType,
     ...(t.isInstapay ? { instapay: true } : {}),

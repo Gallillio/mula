@@ -5,7 +5,7 @@ import { View } from 'react-native';
 import { FieldRow } from '../../transactions/components/FieldRow';
 import { AccountPicker, CategoryPicker, PayeePicker, type PayeeChoice } from '../../transactions/components/Pickers';
 import { TransactionRow } from '../../transactions/components/TransactionRow';
-import { useTransactions } from '../../transactions/data/transactionsRepo';
+import { useSpentTogether, useTransactions } from '../../transactions/data/transactionsRepo';
 import { useLookups } from '../../transactions/data/useLookups';
 import { Button, IconButton } from '../../shared/components/Button';
 import { confirm, toast } from '../../shared/components/Feedback';
@@ -17,6 +17,7 @@ import { Text } from '../../shared/components/Text';
 import type { CategoryKind, ID, PayeeKind } from '../../shared/db/types';
 import { Screen } from '../../shared/layouts/Screen';
 import { shortDate } from '../../shared/utils/dates';
+import { formatMoney } from '../../shared/utils/money';
 import { plural } from '../../shared/utils/text';
 import { PayeeAvatar } from '../components/PayeeAvatar';
 import {
@@ -49,6 +50,8 @@ export default function PayeeDetailPage() {
   const { data: aliases } = usePayeeAliases(id);
   const { data: usage } = usePayeeUsage(id);
   const { data: txs } = useTransactions({ payeeId: id, limit: RECENT_LIMIT }, [id]);
+  const { data: sharedTxs } = useTransactions({ withPersonId: id, limit: RECENT_LIMIT }, [id]);
+  const { data: together } = useSpentTogether(id);
   const lookups = useLookups();
 
   const [form, setForm] = useState<Form | null>(null);
@@ -90,6 +93,11 @@ export default function PayeeDetailPage() {
   const aliasList = aliases ?? [];
   const recordCount = usage?.records ?? 0;
   const latest = records[0]?.date;
+  const shared = sharedTxs ?? [];
+  const sharedCount = usage?.sharedRecords ?? 0;
+  const togetherLine = together?.records
+    ? `${formatMoney(together.spent)} on ${plural(together.records, 'expense')}${together.latest ? `, latest on ${shortDate(together.latest)}` : ''}`
+    : null;
   const usageLine = recordCount ? `${plural(recordCount, 'record')}${latest ? `, latest on ${shortDate(latest)}` : ''}` : 'No records yet';
 
   const save = async () => {
@@ -155,9 +163,13 @@ export default function PayeeDetailPage() {
     }
     const ok = await confirm({
       title: `Delete ${payee.name}?`,
-      message: recordCount
-        ? `Their ${plural(recordCount, 'record')} stay, just without a payee. Bank names linked to them are forgotten.`
-        : 'Bank names linked to them are forgotten.',
+      message: [
+        recordCount ? `Their ${plural(recordCount, 'record')} stay, just without a payee.` : '',
+        sharedCount ? `They’re removed from ${plural(sharedCount, 'record')} you spent together.` : '',
+        'Bank names linked to them are forgotten.',
+      ]
+        .filter(Boolean)
+        .join(' '),
       confirmLabel: 'Delete payee',
       destructive: true,
     });
@@ -269,6 +281,27 @@ export default function PayeeDetailPage() {
           </Text>
         )}
       </Section>
+
+      {form.kind === 'person' || sharedCount ? (
+        <Section
+          title="Spent together"
+          footer={
+            shared.length
+              ? `${togetherLine ?? ''}${shared.length >= RECENT_LIMIT ? `. Showing the latest ${RECENT_LIMIT}.` : ''}`
+              : `When you add ${payee.name} to who you spent with, those records show up here.`
+          }
+        >
+          {shared.map((tx, i) => (
+            <TransactionRow
+              key={tx.id}
+              tx={tx}
+              lookups={lookups}
+              onPress={() => router.push({ pathname: '/add', params: { id: tx.id } })}
+              divider={i < shared.length - 1}
+            />
+          ))}
+        </Section>
+      ) : null}
 
       <View className="mt-8 px-5">
         <Button label="Merge into another payee" variant="secondary" full onPress={() => setSheet('merge')} testID="payee-merge" />

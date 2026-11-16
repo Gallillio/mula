@@ -9,7 +9,7 @@ import { listRecurring, listUpcoming } from '../../../src/modules/recurring/data
 import { all } from '../../../src/modules/shared/db/client';
 import type { Transaction } from '../../../src/modules/shared/db/types';
 import { listTemplates } from '../../../src/modules/templates/data/templatesRepo';
-import { rowToTx, type TxRow } from '../../../src/modules/transactions/data/transactionsRepo';
+import { rowToTx, withPersonSql, type TxRow } from '../../../src/modules/transactions/data/transactionsRepo';
 import { listActivity } from '../changes';
 import { formatDay, formatLocal, localParts, PERIODS, resolvePeriod } from '../dates';
 import { getMeta } from '../sync';
@@ -19,6 +19,7 @@ import {
   amountIn,
   balancesOut,
   categoryPath,
+  findPerson,
   flag,
   loadLookups,
   major,
@@ -109,7 +110,9 @@ export const readTools: Tool[] = [
   {
     name: 'get_catalog',
     title: 'Accounts, categories, payees and templates',
-    description: 'Every account, category (with its parent and need/want nature), payee (with defaults and the bank names that map to it) and template, with ids to use in other tools.',
+    description:
+      'Every account, category (with its parent and need/want nature), payee (with defaults and the bank names that map to it) and template, with ids to use in other tools. ' +
+      'Payees of kind person are the people the user can say they spent with (spent_with counts those records).',
     inputSchema: {
       type: 'object',
       properties: { include_archived: { type: 'boolean', description: 'Also list archived accounts and categories' } },
@@ -123,6 +126,10 @@ export const readTools: Tool[] = [
       const aliasMap = new Map<string, string[]>();
       for (const a of aliases) aliasMap.set(a.payee_id, [...(aliasMap.get(a.payee_id) ?? []), a.raw]);
       const templates = await listTemplates();
+      const sharedRows = await all<{ id: string; n: number }>(
+        'SELECT j.value AS id, COUNT(*) AS n FROM transactions t, json_each(t.people) j WHERE t.people IS NOT NULL AND t.parent_id IS NULL GROUP BY j.value',
+      );
+      const shared = new Map(sharedRows.map((r) => [r.id, r.n]));
       return ok({
         base_currency: lk.base,
         accounts: (await balancesOut(lk)).filter((a) => archived || !a.archived),
@@ -144,6 +151,7 @@ export const readTools: Tool[] = [
           ...(p.defaultAccountId ? { usual_account: lk.accountById.get(p.defaultAccountId)?.name } : {}),
           ...(p.autoConfirm ? { auto_confirm: true } : {}),
           ...(aliasMap.get(p.id)?.length ? { bank_names: aliasMap.get(p.id) } : {}),
+          ...(shared.get(p.id) ? { spent_with: shared.get(p.id) } : {}),
           ...(p.note ? { note: p.note } : {}),
         })),
         templates: templates.map((t) => ({
@@ -175,8 +183,9 @@ export const readTools: Tool[] = [
         include_subcategories: { type: 'boolean', description: 'With category: include its subcategories (default true)' },
         uncategorized: { type: 'boolean', description: 'Only expenses/income without a category' },
         payee: { type: 'string', description: 'Payee name or id' },
+        with: { type: 'string', description: 'Only records the user spent with this person (name or id)' },
         type: { type: 'string', enum: [...TX_TYPES] },
-        search: { type: 'string', description: 'Text in the note, payee or category name' },
+        search: { type: 'string', description: 'Text in the note, payee, category or people’s names' },
         min_amount: { type: 'number', description: 'In the record’s own currency' },
         max_amount: { type: 'number' },
         source: { type: 'string', enum: ['manual', 'sms', 'applepay', 'claude', 'import', 'recurring'] },
@@ -228,10 +237,19 @@ export const readTools: Tool[] = [
         where.push('t.payee_id = ?');
         params.push(payee.id);
       }
+      if (args.with !== undefined && args.with !== null && args.with !== '') {
+        const person = findPerson(args.with, lk, 'with');
+        if (!person) return ok({ count: 0, transactions: [], note: `Nobody is called "${String(args.with)}"; see the payees of kind person in get_catalog.` });
+        where.push(withPersonSql('t'));
+        params.push(person.id);
+      }
       const search = text(args.search, 'search');
       if (search) {
-        where.push('(t.note LIKE ? OR p.name LIKE ? OR c.name LIKE ?)');
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        where.push(
+          `(t.note LIKE ? OR p.name LIKE ? OR c.name LIKE ?
+            OR EXISTS (SELECT 1 FROM json_each(COALESCE(t.people, '[]')) j JOIN payees wp ON wp.id = j.value WHERE wp.name LIKE ?))`,
+        );
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
       }
       const min = amountIn(args.min_amount, 'min_amount', { allowZero: true });
       const max = amountIn(args.max_amount, 'max_amount', { allowZero: true });
@@ -279,14 +297,17 @@ export const readTools: Tool[] = [
     name: 'spending_report',
     title: 'Spending or income report',
     description:
-      'Totals for a period grouped by category, subcategory, payee, account, month, week, day, weekday, hour or nature (need/want/saving). ' +
+      'Totals for a period grouped by category, subcategory, payee, account, month, week, day, weekday, hour, nature (need/want/saving) ' +
+      'or person (who the user spent with; a record shared by two people counts fully for each, so person groups can add up to more than the total). ' +
+      'with limits it to records spent with one person. ' +
       'Counts like Mula’s Insights: transfers and debt movements are excluded, fees count as spending, accounts marked "exclude from stats" are left out. ' +
       'Amounts are in the base currency.',
     inputSchema: {
       type: 'object',
       properties: {
         ...periodProps,
-        group_by: { type: 'string', enum: ['category', 'subcategory', 'payee', 'account', 'month', 'week', 'day', 'weekday', 'hour', 'nature'], description: 'Default category' },
+        group_by: { type: 'string', enum: ['category', 'subcategory', 'payee', 'account', 'month', 'week', 'day', 'weekday', 'hour', 'nature', 'person'], description: 'Default category' },
+        with: { type: 'string', description: 'Only records spent with this person (name or id)' },
         type: { type: 'string', enum: ['expense', 'income'], description: 'Default expense' },
         account: { type: 'string' },
         category: { type: 'string', description: 'Only this category (and its subcategories)' },
@@ -299,15 +320,32 @@ export const readTools: Tool[] = [
       const lk = await loadLookups();
       const p = periodOf(args, lk);
       const type = oneOf(args.type, 'type', ['expense', 'income'] as const) ?? 'expense';
-      const groupBy = oneOf(args.group_by, 'group_by', ['category', 'subcategory', 'payee', 'account', 'month', 'week', 'day', 'weekday', 'hour', 'nature'] as const) ?? 'category';
+      const groupBy = oneOf(args.group_by, 'group_by', ['category', 'subcategory', 'payee', 'account', 'month', 'week', 'day', 'weekday', 'hour', 'nature', 'person'] as const) ?? 'category';
       const account = resolveAccount(args.account, lk);
       const cat = args.category ? await resolveCategory(args.category, type, lk) : null;
       const catSet = cat ? new Set(categoryIds(cat.id, lk, true)) : null;
+      const person = args.with !== undefined && args.with !== null && args.with !== '' ? findPerson(args.with, lk, 'with') : null;
+      if (args.with && !person) throw new InputError(`Nobody is called "${String(args.with)}"; see the payees of kind person in get_catalog`);
       const stats = await loadStats(p.from, p.to, account?.id ?? null);
-      const counted = stats.txs.filter((t) => (type === 'expense' ? isSpend(t, stats.ctx) : isEarn(t, stats.ctx)) && (!catSet || (t.categoryId != null && catSet.has(t.categoryId))));
+      // A fee row counts with the people of the record it belongs to.
+      const byId = new Map(stats.txs.map((t) => [t.id, t]));
+      const peopleOf = (t: Transaction): string[] => (t.parentId ? (byId.get(t.parentId)?.people ?? []) : (t.people ?? []));
+      const counted = stats.txs.filter(
+        (t) =>
+          (type === 'expense' ? isSpend(t, stats.ctx) : isEarn(t, stats.ctx)) &&
+          (!catSet || (t.categoryId != null && catSet.has(t.categoryId))) &&
+          (!person || peopleOf(t).includes(person.id)),
+      );
       const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const keysOf = (t: Transaction): string[] => {
+        if (groupBy !== 'person') return [keyOf(t)];
+        const names = peopleOf(t).map((id) => lk.payeeById.get(id)?.name ?? id);
+        return names.length ? names : ['Just me'];
+      };
       const keyOf = (t: Transaction): string => {
         switch (groupBy) {
+          case 'person':
+            return 'Just me';
           case 'category': {
             const c = t.categoryId ? lk.categoryById.get(t.categoryId) : null;
             const top = c?.parentId ? lk.categoryById.get(c.parentId) : c;
@@ -339,10 +377,12 @@ export const readTools: Tool[] = [
       const groups = new Map<string, { amount: number; count: number }>();
       let total = 0;
       for (const t of counted) {
-        const g = groups.get(keyOf(t)) ?? { amount: 0, count: 0 };
-        g.amount += t.baseAmount;
-        if (!t.parentId) g.count++;
-        groups.set(keyOf(t), g);
+        for (const key of keysOf(t)) {
+          const g = groups.get(key) ?? { amount: 0, count: 0 };
+          g.amount += t.baseAmount;
+          if (!t.parentId) g.count++;
+          groups.set(key, g);
+        }
         total += t.baseAmount;
       }
       const timeline = ['month', 'week', 'day', 'hour'].includes(groupBy);
@@ -354,8 +394,10 @@ export const readTools: Tool[] = [
         from: formatDay(p.from || 0, lk.tz),
         to: formatDay(p.to, lk.tz),
         type,
+        ...(person ? { with: person.name } : {}),
         currency: lk.base,
         total: major(total),
+        ...(groupBy === 'person' ? { note: 'A record shared by several people counts fully in each of their groups; share is of the total.' } : {}),
         records: counted.filter((t) => !t.parentId).length,
         groups: out,
       });
@@ -370,7 +412,8 @@ export const readTools: Tool[] = [
       'Amounts are integers in minor units (divide by 100); dates are milliseconds since the epoch (UTC; the user’s zone is in get_overview). ' +
       'Tables: transactions(id, type expense|income|transfer, amount, currency, account_id, to_account_id, to_amount, category_id, payee_id, ' +
       'payment_type, date, note, is_instapay, parent_id (set on fee rows), nature_override, original_amount, original_currency, fx_rate, ' +
-      'base_amount (in the base currency), recurring_id, debt_id, source, created_at, updated_at); accounts(id, name, type, currency, ' +
+      'base_amount (in the base currency), recurring_id, debt_id, people (JSON array of payee ids the user spent it with, or NULL; ' +
+      'use json_each), source, created_at, updated_at); accounts(id, name, type, currency, ' +
       'initial_balance, identifiers JSON, bank_balance, archived, exclude_from_stats); categories(id, parent_id, name, kind, nature, archived); ' +
       'payees(id, name, kind, default_category_id, default_account_id, auto_confirm); payee_aliases(raw, payee_id); inbox_items(id, source, ' +
       'raw_text, parsed JSON, received_at, status pending|confirmed|dismissed|merged, transaction_id); recurring(...); templates(...); debts(...).',

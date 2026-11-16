@@ -90,6 +90,7 @@ Then try one of the prompts at the top of this page.
 ## Day to day
 
 - **Claude's changes** arrive on the phone with the next sync, and Mula shows a note when they do. Each change set can be undone in **Claude's changes**; records edited again since stay as they are.
+- **Who you spent with:** records can list the people you spent them with ("dinner with Jana and Khaled"). Ask Claude to tag them, to find what you spent with someone, or to break spending down by person.
 - **Sign Claude out** (Automation › Claude) revokes its access until you approve it again.
 - **Disconnect** stops syncing and keeps the data on this phone. **Erase cloud copy** also deletes everything from the relay.
 - Your data now lives in two places: the phone, and your Cloudflare account.

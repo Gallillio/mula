@@ -8,7 +8,7 @@ import { buildSuggestion, confirmItem, getInboxItem, linkToExisting, type Sugges
 import { aliasDecisionForInbox } from '../../inbox/utils/aliasDecision';
 import { getRate } from '../../integrations/utils/fx';
 import { askAlias } from '../../payees/components/AliasPrompt';
-import { findOrCreatePayee, getPayee, recentInstapayPayees, setAlias } from '../../payees/data/payeesRepo';
+import { findOrCreatePayee, getPayee, idsForPeople, recentInstapayPayees, setAlias } from '../../payees/data/payeesRepo';
 import { getTemplate, saveTemplate, useTemplates } from '../../templates/data/templatesRepo';
 import { BottomSheet } from '../../shared/components/BottomSheet';
 import { Button, IconButton } from '../../shared/components/Button';
@@ -31,7 +31,8 @@ import { getSettings, useSettings, type FeeRule } from '../../shared/settings/se
 import { dayLabel, timeLabel } from '../../shared/utils/dates';
 import { formatMoney, parseAmount, toMinor } from '../../shared/utils/money';
 import { FieldRow } from '../components/FieldRow';
-import { AccountPicker, CategoryPicker, CurrencyPicker, PayeePicker, PaymentTypePicker, type PayeeChoice } from '../components/Pickers';
+import { AccountPicker, CategoryPicker, CurrencyPicker, PayeePicker, PaymentTypePicker, PeoplePicker, type PayeeChoice } from '../components/Pickers';
+import { peopleLabel } from '../utils/people';
 import { createTransaction, deleteTransaction, getFeeTotal, getTransaction, updateTransaction } from '../data/transactionsRepo';
 import { paymentTypeLabel, type TxInput } from '../types';
 import { instapayFee } from '../utils/instapay';
@@ -56,6 +57,8 @@ type Form = {
   nature: Nature | null;
   recurringId: ID | null;
   debtId: ID | null;
+  /** Who you spent it with. */
+  people: PayeeChoice[];
 };
 
 const emptyForm = (mode: Mode = 'expense'): Form => ({
@@ -75,6 +78,7 @@ const emptyForm = (mode: Mode = 'expense'): Form => ({
   nature: null,
   recurringId: null,
   debtId: null,
+  people: [],
 });
 
 const MODES: { value: Mode; label: string }[] = [
@@ -89,7 +93,7 @@ const amountExpr = (minor: number) => {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 };
 
-function formFromTx(t: Transaction, fee: number, payee: Payee | null, rule: FeeRule): Form {
+function formFromTx(t: Transaction, fee: number, payee: Payee | null, rule: FeeRule, people: Payee[]): Form {
   const standard = t.isInstapay ? instapayFee(t.amount, rule) : 0;
   return {
     mode: t.isInstapay ? 'instapay' : t.type,
@@ -109,6 +113,7 @@ function formFromTx(t: Transaction, fee: number, payee: Payee | null, rule: FeeR
     nature: t.natureOverride,
     recurringId: t.recurringId,
     debtId: t.debtId,
+    people: people.map((p) => ({ payeeId: p.id, name: p.name })),
   };
 }
 
@@ -126,7 +131,7 @@ export default function TransactionFormPage() {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [rate, setRate] = useState<number | null>(null);
   const [toRate, setToRate] = useState<number | null>(null);
-  const [sheet, setSheet] = useState<null | 'account' | 'to' | 'category' | 'payee' | 'payment' | 'date' | 'currency' | 'nature' | 'fee' | 'note' | 'menu' | 'template'>(null);
+  const [sheet, setSheet] = useState<null | 'account' | 'to' | 'category' | 'payee' | 'people' | 'payment' | 'date' | 'currency' | 'nature' | 'fee' | 'note' | 'menu' | 'template'>(null);
   const [noteDraft, setNoteDraft] = useState('');
   const [templateName, setTemplateName] = useState('');
   const [customFee, setCustomFee] = useState('');
@@ -164,9 +169,9 @@ export default function TransactionFormPage() {
       if (params.id) {
         const t = await getTransaction(params.id);
         if (!t || !alive) return;
-        const [fee, payee] = await Promise.all([getFeeTotal(t.id), t.payeeId ? getPayee(t.payeeId) : null]);
+        const [fee, payee, people] = await Promise.all([getFeeTotal(t.id), t.payeeId ? getPayee(t.payeeId) : null, Promise.all(t.people.map(getPayee))]);
         setExisting(t);
-        setForm(formFromTx(t, fee, payee, getSettings().instapayFee));
+        setForm(formFromTx(t, fee, payee, getSettings().instapayFee, people.filter((p): p is Payee => Boolean(p))));
       } else if (params.inboxId) {
         const item = await getInboxItem(params.inboxId);
         if (!item || !alive) return;
@@ -305,6 +310,7 @@ export default function TransactionFormPage() {
         const kind = form.mode === 'instapay' || form.mode === 'income' ? 'person' : 'merchant';
         payeeId = (await findOrCreatePayee(form.payee.name, suggestion?.item.parsed?.kind === 'instapay_in' ? 'person' : kind)).id;
       }
+      const people = isTransfer ? [] : await idsForPeople(form.people);
 
       const input: TxInput = {
         type: txType,
@@ -323,6 +329,7 @@ export default function TransactionFormPage() {
         original: entryCurrency !== accountCurrency && rate ? { amount: enteredMinor, currency: entryCurrency, rate } : null,
         recurringId: form.recurringId,
         debtId: form.debtId,
+        people,
       };
 
       if (existing) {
@@ -493,6 +500,15 @@ export default function TransactionFormPage() {
             onPress={() => setSheet('payee')}
           />
         ) : null}
+        {!isTransfer ? (
+          <FieldRow
+            testID="field-people"
+            label="With"
+            value={peopleLabel(form.people.map((p) => p.name))}
+            placeholder="Just me"
+            onPress={() => setSheet('people')}
+          />
+        ) : null}
         {form.mode !== 'instapay' && !isTransfer ? (
           <FieldRow testID="field-payment" label="Paid with" value={paymentTypeLabel(paymentType)} onPress={() => setSheet('payment')} />
         ) : null}
@@ -560,6 +576,7 @@ export default function TransactionFormPage() {
         title={payeeLabel}
         suggestions={form.mode === 'instapay' ? instapayRecents : undefined}
       />
+      <PeoplePicker visible={sheet === 'people'} onClose={() => setSheet(null)} selected={form.people} onDone={(people) => set({ people })} />
       <PaymentTypePicker visible={sheet === 'payment'} onClose={() => setSheet(null)} selected={paymentType} onSelect={(p) => set({ paymentType: p })} />
       <CurrencyPicker visible={sheet === 'currency'} onClose={() => setSheet(null)} selected={entryCurrency} onSelect={(cur) => set({ currency: cur })} />
       <DateTimeSheet visible={sheet === 'date'} value={form.date} onClose={() => setSheet(null)} onChange={(date) => set({ date })} />

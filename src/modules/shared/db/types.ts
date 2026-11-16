@@ -93,6 +93,8 @@ export type Transaction = {
   baseAmount: Minor;
   recurringId: ID | null;
   debtId: ID | null;
+  /** People (payees) you spent it with, e.g. a dinner with friends. Empty when it was just you. */
+  people: ID[];
   source: TxSource;
   sourceRef: string | null;
   createdAt: number;

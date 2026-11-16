@@ -24,6 +24,8 @@ export type TxInput = {
   original?: { amount: Minor; currency: string; rate: number } | null;
   recurringId?: ID | null;
   debtId?: ID | null;
+  /** Payee ids of the people you spent it with. */
+  people?: ID[] | null;
   source?: TxSource;
   sourceRef?: string | null;
 };
@@ -36,6 +38,8 @@ export type TxFilter = {
   categoryIds?: ID[] | null;
   payeeId?: ID | null;
   debtId?: ID | null;
+  /** Records you spent with this person. */
+  withPersonId?: ID | null;
   types?: TxType[] | null;
   search?: string | null;
   from?: number | null;

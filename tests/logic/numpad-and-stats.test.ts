@@ -27,7 +27,7 @@ const tx = (p: Partial<Transaction>): Transaction => ({
   id: Math.random().toString(36), type: 'expense', amount: 0, currency: 'EGP', accountId: 'a', toAccountId: null, toAmount: null,
   categoryId: null, payeeId: null, paymentType: 'cash', date: Date.now(), note: null, isInstapay: false, parentId: null,
   natureOverride: null, originalAmount: null, originalCurrency: null, fxRate: null, baseAmount: 0, recurringId: null,
-  debtId: null, source: 'manual', sourceRef: null, createdAt: 0, updatedAt: 0, ...p,
+  debtId: null, people: [], source: 'manual', sourceRef: null, createdAt: 0, updatedAt: 0, ...p,
 });
 
 describe('statistics', () => {

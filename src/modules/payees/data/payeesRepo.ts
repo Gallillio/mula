@@ -57,6 +57,16 @@ export async function findOrCreatePayee(name: string, kind: PayeeKind = 'merchan
   return (await getPayee(id))!;
 }
 
+/** Payee ids for people picked by name or id; new names are saved as people. */
+export async function idsForPeople(choices: readonly { payeeId: ID | null; name: string }[]): Promise<ID[]> {
+  const ids: ID[] = [];
+  for (const c of choices) {
+    const id = c.payeeId ?? (c.name.trim() ? (await findOrCreatePayee(c.name, 'person')).id : null);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export type PayeeInput = {
   id: ID;
   name: string;
@@ -87,8 +97,27 @@ export async function learnFromUse(payeeId: ID, categoryId: ID | null, accountId
   );
 }
 
+/** Records that list `id` among the people they were spent with. */
+const LISTS_PERSON = `EXISTS (SELECT 1 FROM json_each(COALESCE(transactions.people, '[]')) WHERE value = ?)`;
+
+/**
+ * Rewrites the people lists that mention `fromId`: drops it, or swaps in `intoId` (merge).
+ * Lists stay unique and become NULL when nobody is left.
+ */
+async function rewritePeople(fromId: ID, intoId: ID | null): Promise<void> {
+  await run(
+    `UPDATE transactions SET people = (
+       SELECT CASE WHEN COUNT(*) = 0 THEN NULL ELSE json_group_array(v) END FROM (
+         SELECT DISTINCT CASE WHEN value = ? THEN ? ELSE value END AS v FROM json_each(transactions.people)
+       ) WHERE v IS NOT NULL
+     ) WHERE ${LISTS_PERSON}`,
+    [fromId, intoId, fromId],
+  );
+}
+
 export async function deletePayee(id: ID): Promise<void> {
   await transaction(['payees', 'payee_aliases', 'transactions', 'templates', 'recurring'], async () => {
+    await rewritePeople(id, null);
     await run('UPDATE transactions SET payee_id = NULL WHERE payee_id = ?', [id]);
     await run('UPDATE templates SET payee_id = NULL WHERE payee_id = ?', [id]);
     await run('UPDATE recurring SET payee_id = NULL WHERE payee_id = ?', [id]);
@@ -101,6 +130,7 @@ export async function deletePayee(id: ID): Promise<void> {
 export async function mergePayees(fromId: ID, intoId: ID): Promise<void> {
   if (fromId === intoId) return;
   await transaction(['payees', 'payee_aliases', 'transactions', 'debts', 'templates', 'recurring'], async () => {
+    await rewritePeople(fromId, intoId);
     await run('UPDATE transactions SET payee_id = ? WHERE payee_id = ?', [intoId, fromId]);
     await run('UPDATE payee_aliases SET payee_id = ? WHERE payee_id = ?', [intoId, fromId]);
     await run('UPDATE debts SET payee_id = ? WHERE payee_id = ?', [intoId, fromId]);
@@ -142,8 +172,8 @@ export async function setAlias(raw: string, payeeId: ID, opts: { relabelPast?: b
       await run('UPDATE transactions SET payee_id = ? WHERE payee_id = ?', [payeeId, prev.payee_id]);
       const left = await first<{ n: number }>(
         `SELECT (SELECT COUNT(*) FROM transactions WHERE payee_id = ?) + (SELECT COUNT(*) FROM payee_aliases WHERE payee_id = ?)
-           + (SELECT COUNT(*) FROM debts WHERE payee_id = ?) AS n`,
-        [prev.payee_id, prev.payee_id, prev.payee_id],
+           + (SELECT COUNT(*) FROM debts WHERE payee_id = ?) + (SELECT COUNT(*) FROM transactions WHERE ${LISTS_PERSON}) AS n`,
+        [prev.payee_id, prev.payee_id, prev.payee_id, prev.payee_id],
       );
       if (!left?.n) await run('DELETE FROM payees WHERE id = ?', [prev.payee_id]);
     }
@@ -165,16 +195,41 @@ export async function recentInstapayPayees(limit = 8): Promise<Payee[]> {
   return rows.map(toPayee);
 }
 
-export type PayeeUsage = { records: number; debts: number };
+/**
+ * People to offer for "spent with": the ones you tag most recently first, then other people
+ * (payees marked as a person) you've dealt with lately.
+ */
+export async function suggestedPeople(limit = 8): Promise<Payee[]> {
+  const tagged = await all<PayeeRow>(
+    `SELECT p.* FROM transactions t, json_each(t.people) j JOIN payees p ON p.id = j.value
+     WHERE t.people IS NOT NULL AND t.parent_id IS NULL
+     GROUP BY p.id ORDER BY MAX(t.date) DESC LIMIT ?`,
+    [limit],
+  );
+  if (tagged.length >= limit) return tagged.map(toPayee);
+  const seen = new Set(tagged.map((r) => r.id));
+  const others = await all<PayeeRow>(
+    "SELECT * FROM payees WHERE kind = 'person' ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT ?",
+    [limit * 2],
+  );
+  return [...tagged, ...others.filter((r) => !seen.has(r.id))].slice(0, limit).map(toPayee);
+}
 
-/** How many records and debts point at a payee (fee rows not counted). */
+export function useSuggestedPeople(limit = 8) {
+  return useLiveQuery(['payees', 'transactions'], () => suggestedPeople(limit), [limit]);
+}
+
+export type PayeeUsage = { records: number; debts: number; sharedRecords: number };
+
+/** How many records and debts point at a payee (fee rows not counted), and records spent with them. */
 export async function getPayeeUsage(id: ID): Promise<PayeeUsage> {
   const r = await first<PayeeUsage>(
     `SELECT (SELECT COUNT(*) FROM transactions WHERE payee_id = ? AND parent_id IS NULL) AS records,
-            (SELECT COUNT(*) FROM debts WHERE payee_id = ?) AS debts`,
-    [id, id],
+            (SELECT COUNT(*) FROM debts WHERE payee_id = ?) AS debts,
+            (SELECT COUNT(*) FROM transactions WHERE parent_id IS NULL AND ${LISTS_PERSON}) AS sharedRecords`,
+    [id, id, id],
   );
-  return { records: r?.records ?? 0, debts: r?.debts ?? 0 };
+  return { records: r?.records ?? 0, debts: r?.debts ?? 0, sharedRecords: r?.sharedRecords ?? 0 };
 }
 
 export function usePayees() {
@@ -190,5 +245,5 @@ export function usePayeeAliases(id: ID | null | undefined) {
 }
 
 export function usePayeeUsage(id: ID | null | undefined) {
-  return useLiveQuery(['transactions', 'debts', 'payees'], async () => (id ? getPayeeUsage(id) : { records: 0, debts: 0 }), [id]);
+  return useLiveQuery(['transactions', 'debts', 'payees'], async () => (id ? getPayeeUsage(id) : { records: 0, debts: 0, sharedRecords: 0 }), [id]);
 }

@@ -372,6 +372,35 @@ await check('review_inbox: suggestion, then confirm with a new payee name', asyn
   assert(catalog.payees.find((p) => p.name === 'Carrefour')?.bank_names?.includes('CARREFOUR SAMPLE'), 'bank name remembered');
 });
 
+await check('people: spent with, filter, search, report by person, edit, undo', async () => {
+  const add = await tool('add_transactions', {
+    transactions: [{ amount: 300, payee: 'Pizza Place', category: 'Restaurant, fast-food', account: 'CIB', people: ['Sara', 'Omar', 'Sara'] }],
+  });
+  const rec = add.added[0];
+  assert(JSON.stringify(rec.with) === JSON.stringify(['Sara', 'Omar']), JSON.stringify(rec));
+  assert((await tool('find_transactions', { with: 'Sara' })).count === 1, 'with filter');
+  assert((await tool('find_transactions', { search: 'Omar' })).count === 1, 'search by person');
+  const nobody = await tool('find_transactions', { with: 'Nobody Here' });
+  assert(nobody.count === 0 && nobody.note, JSON.stringify(nobody));
+  const rep = await tool('spending_report', { period: 'all_time', group_by: 'person' });
+  const by = Object.fromEntries(rep.groups.map((g) => [g.label, g.amount]));
+  assert(by.Sara === 300 && by.Omar === 300 && by['Just me'] > 0, JSON.stringify(rep.groups));
+  const only = await tool('spending_report', { period: 'all_time', with: 'Omar' });
+  assert(only.total === 300 && only.with === 'Omar', JSON.stringify(only));
+  const catalog = await tool('get_catalog');
+  const sara = catalog.payees.find((p) => p.name === 'Sara');
+  assert(sara?.kind === 'person' && sara.spent_with === 1, JSON.stringify(sara));
+  const edit = await tool('update_transactions', { updates: [{ id: rec.id, people: ['Omar'] }] });
+  assert(JSON.stringify(edit.updated[0].with) === '["Omar"]', JSON.stringify(edit.updated[0]));
+  const keep = await tool('update_transactions', { updates: [{ id: rec.id, note: 'pizza night' }] });
+  assert(JSON.stringify(keep.updated[0].with) === '["Omar"]', `an edit without people kept ${JSON.stringify(keep.updated[0].with)}`);
+  const clear = await tool('update_transactions', { updates: [{ id: rec.id, people: null }] });
+  assert(clear.updated[0].with === undefined, JSON.stringify(clear.updated[0]));
+  for (const c of [clear, keep, edit, add]) await tool('undo_claude_change', { change_id: c.change_id });
+  assert((await tool('find_transactions', { search: 'Pizza Place' })).count === 0, 'undo removed the record');
+  assert(!(await tool('get_catalog')).payees.some((p) => p.name === 'Sara'), 'undo removed the new person');
+});
+
 await check('delete_transactions, then undo it', async () => {
   const coffee = await tool('find_transactions', { search: 'Starbucks' });
   const del = await tool('delete_transactions', { ids: [coffee.transactions[0].id] });

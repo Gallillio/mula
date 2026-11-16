@@ -4,7 +4,7 @@ import { View, useWindowDimensions } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { Easing, interpolate, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 
-import { findOrCreatePayee } from '../../payees/data/payeesRepo';
+import { findOrCreatePayee, idsForPeople } from '../../payees/data/payeesRepo';
 import type { TxInput } from '../../transactions/types';
 import { Button } from '../../shared/components/Button';
 import { toast } from '../../shared/components/Feedback';
@@ -48,6 +48,7 @@ function initialChoice(s: Suggestion): CardChoice {
     categoryId: s.draft.categoryId ?? null,
     payee: s.payee ? { payeeId: s.payee.id, name: s.payee.name } : s.suggestedName ? { payeeId: null, name: s.suggestedName } : null,
     account: s.account,
+    people: [],
   };
 }
 
@@ -102,11 +103,13 @@ function Deck({ s, onLater, hasLater }: { s: Suggestion; onLater: () => void; ha
       }
       const alias = await aliasDecisionForInbox(s, payeeId, choice.payee?.name ?? null);
       const account = choice.account!;
+      const people = s.draft.type === 'expense' ? await idsForPeople(choice.people) : [];
       const input: TxInput = {
         ...(s.draft as TxInput),
         accountId: account.id,
         categoryId: isTransfer ? null : choice.categoryId,
         payeeId,
+        people,
       };
       haptic('success');
       await fling(1, async () => {

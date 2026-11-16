@@ -10,6 +10,7 @@ const INSTRUCTIONS =
   'Mula is the user’s personal budgeting app; this connector reads and changes its data directly. ' +
   'Start with get_overview, and use get_catalog for the exact account, category and payee names and ids. ' +
   'Amounts are in major units (45.5, not 4550) and dates in the user’s time zone. ' +
+  'A record can list the people the user spent it with ("with"); set it with people, filter with "with", and group spending by person. ' +
   'Changes take effect immediately and reach the phone the next time Mula syncs; every change can be undone ' +
   '(list_claude_changes, undo_claude_change, or Automation › Claude in the app). Tell the user what you changed, ' +
   'and confirm with them before deleting records or changing many records at once if their request was ambiguous. ' +
