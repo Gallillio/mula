@@ -12,6 +12,6 @@ npx wrangler deploy   # first time on this Mac it opens a Cloudflare sign-in pag
 cd ..
 
 echo "== 2/2 Installing the app on your iPhone (keep it plugged in and unlocked) =="
-./setup-iphone.sh
+./install-iphone.command
 
 echo "Done. You can close this window."
