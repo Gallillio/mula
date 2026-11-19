@@ -9,7 +9,8 @@ echo "== Finding your iPhone (keep it plugged in and unlocked) =="
 xcrun devicectl list devices --json-output /tmp/mula-devices.json >/dev/null
 DEVICE=$(node -e '
   const d = require("/tmp/mula-devices.json").result.devices
-    .filter(x => x.hardwareProperties?.platform === "iOS" && x.connectionProperties?.tunnelState !== "unavailable");
+    .filter(x => x.hardwareProperties?.platform === "iOS" && x.hardwareProperties?.reality === "physical"
+      && x.connectionProperties?.tunnelState !== "unavailable");
   if (d[0]) console.log(d[0].identifier);
 ')
 if [ -z "$DEVICE" ]; then
