@@ -72,7 +72,7 @@ describe('parseBankSms (CIB)', () => {
 
 describe('parseBankSms (HSBC Egypt)', () => {
   it('reads credit card payments without taking the credit limit for a balance', () => {
-    expect(tx(HSBC_SMS.card)).toMatchObject({ kind: 'card_purchase', amount: 51000, currency: 'EGP', last4: '9002', counterparty: 'sample market', balance: null });
+    expect(tx(HSBC_SMS.card)).toMatchObject({ kind: 'card_purchase', amount: 51000, currency: 'EGP', last4: '9002', counterparty: 'sample market', balance: null, availableLimit: 1105322, availableLimitCurrency: 'EGP' });
     expect(tx(HSBC_SMS.cardDotInName)).toMatchObject({ amount: 9900, currency: 'USD', counterparty: 'APPLE.COM/US' });
     expect(tx(HSBC_SMS.cardBrackets)).toMatchObject({ last4: '9003', counterparty: 'NOON (INSTANT)' });
   });

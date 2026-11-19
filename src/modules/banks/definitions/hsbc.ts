@@ -38,8 +38,17 @@ export const HSBC: BankDefinition = {
     {
       // Your Credit Card ending with *** 9002 has been used for EGP 123.45 on 20/08/2026 at SAMPLE STORE. Your available limit is EGP 12345.67
       kind: 'card_purchase',
-      regex: re(`Your (?:Credit |Debit |Prepaid )?Card ending with\\s*${LAST4}\\s+has been used for\\s+${CCY}\\s*${NUM}\\s+on\\s+[\\d/]+\\s+at\\s*(.*?)\\.\\s*Your available limit`),
-      map: (m) => ({ last4: m[1], ccy: m[2], amountText: m[3], counterparty: clean(m[4]) }),
+      // The limit is kept apart from the balance: for charges in another currency, its drop since the
+      // card's previous message is the amount HSBC actually held in EGP (see cardLimitRepo).
+      regex: re(`Your (?:Credit |Debit |Prepaid )?Card ending with\\s*${LAST4}\\s+has been used for\\s+${CCY}\\s*${NUM}\\s+on\\s+[\\d/]+\\s+at\\s*(.*?)\\.\\s*Your available limit(?:\\s+is\\s+${CCY}\\s*${NUM})?`),
+      map: (m) => ({
+        last4: m[1],
+        ccy: m[2],
+        amountText: m[3],
+        counterparty: clean(m[4]),
+        availableLimit: toMinorText(m[6]),
+        availableLimitCurrency: m[6] ? m[5] : null,
+      }),
     },
     {
       // Your HSBC Account ********9001 was credited with IPN inward transfer for EGP 1,500.00 on 20-08-2026 16:33 from nour.test@instapay with reference a1b2c3d4. …

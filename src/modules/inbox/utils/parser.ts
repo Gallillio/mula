@@ -55,6 +55,7 @@ export function parseBankSms(text: string, receivedAt: number = Date.now(), opts
           occurredAt: rest.occurredAt ?? receivedAt,
           balance: rest.balance ?? null,
           balanceCurrency: rest.balanceCurrency ?? null,
+          ...(rest.availableLimit != null ? { availableLimit: rest.availableLimit, availableLimitCurrency: rest.availableLimitCurrency ?? null } : {}),
         },
       };
     }

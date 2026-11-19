@@ -24,6 +24,16 @@ export type Settings = {
   onboarded: boolean;
   /** Apple Pay automation entries are merged into the SMS for the same payment. */
   mergeWindowMinutes: number;
+  /**
+   * The bank's mark-up over the market rate on card charges in another currency, in percent, by
+   * currency code; `other` covers the rest. Used when the available limit can't give the amount.
+   */
+  cardFxMarkup: Record<string, number>;
+  /**
+   * Merchants abroad that bill in EGP (matched as text in the bank's merchant name). The bank adds
+   * a cross-border fee when it posts them, so their records wait for the final amount.
+   */
+  foreignEgpMerchants: string[];
   /** IANA zone of the phone (e.g. Africa/Cairo), so the cloud copy reads dates the way you do. */
   timeZone: string | null;
   /** The cloud copy (relay/), e.g. https://mula-relay.you.workers.dev. Its app token is in the keychain. */
@@ -47,6 +57,9 @@ export type Settings = {
 /** InstaPay tariff published on instapay.eg, effective 1 April 2025. */
 export const INSTAPAY_DEFAULT_FEE: FeeRule = { percent: 0.1, min: 50, max: 2000 };
 
+/** HSBC Egypt's mark-ups as seen on statements: 3% on USD, 6% on GBP. */
+export const CARD_FX_MARKUP_DEFAULT: Record<string, number> = { USD: 3, GBP: 6, other: 3 };
+
 export const defaultSettings: Settings = {
   appearance: 'system',
   baseCurrency: 'EGP',
@@ -58,6 +71,8 @@ export const defaultSettings: Settings = {
   lastAccountId: null,
   onboarded: false,
   mergeWindowMinutes: 10,
+  cardFxMarkup: CARD_FX_MARKUP_DEFAULT,
+  foreignEgpMerchants: ['REGUS'],
   timeZone: null,
   syncRelayUrl: null,
   syncDeviceId: null,

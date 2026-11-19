@@ -37,6 +37,8 @@ Design rules for screens: [ui-conventions.md](ui-conventions.md).
 4. **Inbox.** `ingestSms` stores the item (deduplicated), updates the account's bank balance, pairs card holds with their reversals, and merges Apple Pay entries with their SMS (`src/modules/inbox`).
 5. **Suggestion.** `buildSuggestion` picks the account (card digits), payee (learned aliases), category, fee, conversion, a possible duplicate and a matching planned payment. Trusted payees are confirmed automatically; everything else waits for a swipe.
 
+**Card charges settled later (HSBC credit cards).** HSBC card texts report the available limit. For a charge in another currency, the EGP amount is the limit's drop since the card's previous text, plus payments and credits recorded in between: HSBC's own hold. It is used when it falls within 0.95–1.20× the market conversion; otherwise Mula books market × the mark-up in `cardFxMarkup`. `transactions.fx_method` says which was used. Foreign-currency records, and EGP charges from `foreignEgpMerchants`, get `awaiting_final = 1` until their amount is edited. When an EGP text shows the limit fell by more than its own amount, `checkLimitGap` (at ingest) adds the gap to the one waiting record it plausibly fits, which stays flagged. A gap that fits several records, or a negative gap, is only noted. Notes go in `bank_notes`. Rules: `src/modules/inbox/utils/cardFx.ts`; queries: `src/modules/inbox/data/cardLimitRepo.ts`.
+
 ## Planned payments
 
 `src/modules/recurring`. On each foreground, `processDueRecurring` logs due "auto" payments and queues "ask me" ones in the inbox. A payment can be charged in another currency than its account's: it's converted at the rate of its date, and waits in the inbox if no rate is available yet.

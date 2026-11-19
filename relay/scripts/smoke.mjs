@@ -464,6 +464,29 @@ await check('debts: lend over InstaPay (fee is spending), repay', async () => {
   assert(r.remaining === 1000 && r.status === 'open', JSON.stringify(r));
 });
 
+await check('foreign-currency card charges: awaiting_final_amount, filter, final amount, settings', async () => {
+  const r = await tool('add_transactions', { transactions: [{ amount: 5, currency: 'USD', payee: 'Railway', category: 'Groceries', account: 'CIB', awaiting_final_amount: true }] });
+  const rec = r.added[0];
+  assert(rec.awaiting_final_amount === true && rec.entered_as === 'USD 5', JSON.stringify(rec));
+  const waiting = await tool('find_transactions', { awaiting_final_amount: true });
+  assert(waiting.count === 1 && waiting.transactions[0].id === rec.id, JSON.stringify(waiting).slice(0, 300));
+  const overview = await tool('get_overview');
+  assert(overview.awaiting_final_amount?.records === 1, JSON.stringify(overview.awaiting_final_amount));
+  const keep = await tool('update_transactions', { updates: [{ id: rec.id, note: 'Hosting' }] });
+  assert(keep.updated[0].awaiting_final_amount === true, `a note edit cleared the flag: ${JSON.stringify(keep.updated[0])}`);
+  const fin = await tool('update_transactions', { updates: [{ id: rec.id, amount: 277.84 }] });
+  const u = fin.updated[0];
+  assert(!u.awaiting_final_amount && u.amount === 277.84 && u.entered_as === 'USD 5', JSON.stringify(u));
+  assert(u.bank_notes?.some((n) => /taken as the final amount/.test(n)), JSON.stringify(u.bank_notes));
+  assert((await tool('find_transactions', { awaiting_final_amount: true })).count === 0, 'still listed as waiting');
+  const q = await tool('run_query', { sql: 'SELECT fx_method, awaiting_final, bank_notes FROM transactions WHERE id = ?', params: [rec.id] });
+  assert(q.rows[0]?.awaiting_final === 0 && /final amount/.test(q.rows[0].bank_notes), JSON.stringify(q.rows));
+  const s = await tool('update_settings', { fx_markup_percent: { GBP: 5.5, eur: 4 }, foreign_egp_merchants: ['regus', 'WeWork'] });
+  assert(s.fx_markup_percent.GBP === 5.5 && s.fx_markup_percent.EUR === 4 && s.fx_markup_percent.USD === 3, JSON.stringify(s));
+  assert(s.foreign_egp_merchants.join() === 'REGUS,WEWORK', JSON.stringify(s));
+  await tool('update_settings', { fx_markup_percent: { usd: 50 } }, { expectError: true });
+});
+
 await check('update_settings', async () => {
   const r = await tool('update_settings', { merge_window_minutes: 15 });
   assert(r.merge_window_minutes === 15, JSON.stringify(r));

@@ -95,11 +95,28 @@ export type Transaction = {
   debtId: ID | null;
   /** People (payees) you spent it with, e.g. a dinner with friends. Empty when it was just you. */
   people: ID[];
+  /** How a card charge in another currency was turned into the account's currency (see FxMethod). */
+  fxMethod: FxMethod | null;
+  /**
+   * The bank hasn't settled this charge yet: it converts (or adds a cross-border fee) when it
+   * posts, a few days later, without a message. Cleared once the amount is edited.
+   */
+  awaitingFinal: boolean;
+  /** Mula's notes about the bank's amount (how it was worked out, later adjustments). */
+  bankNotes: string[];
   source: TxSource;
   sourceRef: string | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/**
+ * How a foreign-currency card charge got its amount in the account's currency:
+ * - available_limit: the drop in the card's available limit between two of its messages (the bank's own hold)
+ * - markup: the market rate plus the bank's usual mark-up (no usable limit drop)
+ * - market: the market rate alone
+ */
+export type FxMethod = 'available_limit' | 'markup' | 'market';
 
 export type InboxSource = 'sms' | 'applepay' | 'claude' | 'recurring' | 'paste';
 export type InboxStatus = 'pending' | 'confirmed' | 'dismissed' | 'merged';
@@ -125,6 +142,11 @@ export type ParsedMessage = {
   occurredAt: number | null;
   balance: Minor | null;
   balanceCurrency: string | null;
+  /** Credit cards: the available limit the message reports after this charge (not a balance). */
+  availableLimit?: Minor | null;
+  availableLimitCurrency?: string | null;
+  /** Set when the message arrived: the card's limit didn't move by this message's amount alone. */
+  limitCheck?: LimitCheck | null;
   /** A name for the account when there are no digits to go by (Wallet card name, Claude). */
   accountHint?: string | null;
   /** Category name suggested by the source (Claude). */
@@ -132,6 +154,15 @@ export type ParsedMessage = {
   /** For transfers from Claude: the account the money went to. */
   toAccountHint?: string | null;
   note?: string | null;
+};
+
+/** What the available limit on a card message said about earlier charges (see cardLimitRepo). */
+export type LimitCheck = {
+  /** Expected limit minus the reported one: positive when the bank took more than this message's amount. */
+  gap: Minor;
+  /** The awaiting record the gap was added to (positive gap) or noted on (negative gap). */
+  appliedTo: ID | null;
+  note: string;
 };
 
 export type InboxItem = {

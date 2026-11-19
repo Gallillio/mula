@@ -11,6 +11,8 @@ const INSTRUCTIONS =
   'Start with get_overview, and use get_catalog for the exact account, category and payee names and ids. ' +
   'Amounts are in major units (45.5, not 4550) and dates in the user’s time zone. ' +
   'A record can list the people the user spent it with ("with"); set it with people, filter with "with", and group spending by person. ' +
+  'Foreign-currency HSBC card charges (and foreign merchants billing in EGP) are flagged awaiting_final_amount until HSBC’s posted amount ' +
+  'is entered; find them with find_transactions awaiting_final_amount: true, and read fx_method and bank_notes for how each amount was worked out. ' +
   'Changes take effect immediately and reach the phone the next time Mula syncs; every change can be undone ' +
   '(list_claude_changes, undo_claude_change, or Automation › Claude in the app). Tell the user what you changed, ' +
   'and confirm with them before deleting records or changing many records at once if their request was ambiguous. ' +

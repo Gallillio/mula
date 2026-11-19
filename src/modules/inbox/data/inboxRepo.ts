@@ -12,6 +12,7 @@ import { notify, useLiveQuery } from '../../shared/db/live';
 import { SYSTEM_CATEGORIES } from '../../shared/db/seeds/categories';
 import type {
   Account,
+  FxMethod,
   ID,
   InboxItem,
   InboxSource,
@@ -24,6 +25,9 @@ import type {
 } from '../../shared/db/types';
 import { getSettings } from '../../shared/settings/settingsStore';
 import { newId } from '../../shared/utils/id';
+import { formatMoney } from '../../shared/utils/money';
+import { isForeignEgpMerchant } from '../utils/cardFx';
+import { checkLimitGap, foreignChargeAmount } from './cardLimitRepo';
 import { dedupeKey, findHoldPairs, isSamePayment, parseWalletTransaction } from '../utils/matching';
 import { isOutflow, parseBankSms, suggestPayeeName } from '../utils/parser';
 
@@ -119,6 +123,15 @@ async function ingestParsed(parsed: ParsedMessage | null, source: InboxSource, r
     const account = await findAccountByIdentifier(parsed.last4);
     if (account && parsed.balanceCurrency === account.currency) {
       await setBankBalance(account.id, parsed.balance, parsed.occurredAt ?? receivedAt);
+    }
+  }
+
+  // A card's available limit can reveal the bank silently posting an earlier charge.
+  if (source === 'sms' && parsed?.availableLimit != null) {
+    try {
+      await checkLimitGap(id);
+    } catch (e) {
+      console.warn('Card limit check failed', e);
     }
   }
 
@@ -256,6 +269,30 @@ export async function buildSuggestion(item: InboxItem): Promise<Suggestion> {
     }
   }
 
+  // Card charges the bank settles later: its own amount where the message shows it, a flag until
+  // the final amount is known, and notes on how the amount was worked out.
+  let fxMethod: FxMethod | null = null;
+  let awaitingFinal = false;
+  const bankNotes: string[] = [];
+  const fromBank = item.source === 'sms' || item.source === 'paste';
+  if (account && fromBank && p.currency !== account.currency) {
+    awaitingFinal = true;
+    const isCharge = p.kind === 'card_purchase' || p.kind === 'applepay_purchase';
+    const fx = isCharge && item.source === 'sms' && p.availableLimit != null ? await foreignChargeAmount(item.id, p, account, item.receivedAt, original ? amount : null) : null;
+    if (fx) {
+      amount = fx.amount;
+      original = { amount: p.amount, currency: p.currency, rate: fx.amount / p.amount };
+      fxMethod = fx.method;
+      bankNotes.push(...fx.notes);
+    } else if (original) {
+      fxMethod = 'market';
+    }
+  } else if (account && fromBank && p.kind === 'card_purchase' && isForeignEgpMerchant(p.counterparty, getSettings().foreignEgpMerchants)) {
+    awaitingFinal = true;
+    bankNotes.push('Merchant abroad billing in EGP: the bank adds a cross-border fee when it posts the charge');
+  }
+  if (p.limitCheck?.note) bankNotes.push(p.limitCheck.note);
+
   const rawName = p.kind === 'atm_withdrawal' || p.kind === 'cash_deposit' ? null : p.counterparty;
   const payee = await resolveAlias(rawName);
   const suggestedName = rawName && !payee ? (p.kind === 'instapay_in' ? suggestPayeeName(rawName) : suggestPayeeName(rawName)) : null;
@@ -283,6 +320,9 @@ export async function buildSuggestion(item: InboxItem): Promise<Suggestion> {
     fee,
     original,
     note: p.note ?? null,
+    fxMethod,
+    awaitingFinal,
+    bankNotes,
     source: item.source === 'applepay' ? 'applepay' : item.source === 'claude' ? 'claude' : 'sms',
     sourceRef: item.id,
   };
@@ -388,8 +428,9 @@ export type ConfirmOptions = {
 
 export async function confirmItem(itemId: ID, input: TxInput, opts: ConfirmOptions = {}): Promise<ID> {
   const item = await getInboxItem(itemId);
+  const settled = await withSettlement(item, input);
   const txId = await createTransaction({
-    ...input,
+    ...settled,
     source: input.source ?? (item?.source === 'applepay' ? 'applepay' : item?.source === 'recurring' ? 'recurring' : 'sms'),
     sourceRef: itemId,
     recurringId: input.recurringId ?? item?.recurringId ?? null,
@@ -401,6 +442,27 @@ export async function confirmItem(itemId: ID, input: TxInput, opts: ConfirmOptio
     [txId, Date.now(), itemId],
   );
   return txId;
+}
+
+/**
+ * Callers that build their own input (the record form, Claude) don't carry the bank-amount fields:
+ * take them from the suggestion. If the amount was changed when confirming, that amount is final.
+ */
+async function withSettlement(item: InboxItem | null, input: TxInput): Promise<TxInput> {
+  if (!item || (input.awaitingFinal !== undefined && input.fxMethod !== undefined && input.bankNotes !== undefined)) return input;
+  // Fields the caller did set win (Claude can set the flag itself).
+  const given: Partial<TxInput> = {};
+  if (input.fxMethod !== undefined) given.fxMethod = input.fxMethod;
+  if (input.awaitingFinal !== undefined) given.awaitingFinal = input.awaitingFinal;
+  if (input.bankNotes !== undefined) given.bankNotes = input.bankNotes;
+  const d = (await buildSuggestion(item)).draft;
+  if (!d.awaitingFinal && !d.fxMethod && !d.bankNotes?.length) return input;
+  // The form converts with the suggestion's rate, which can land a piastre off.
+  const same = input.accountId === d.accountId && Math.abs(Math.abs(input.amount) - d.amount) <= 1;
+  if (same) return { ...input, amount: d.amount, fxMethod: d.fxMethod ?? null, awaitingFinal: Boolean(d.awaitingFinal), bankNotes: d.bankNotes ?? [], ...given };
+  const notes = [...(d.bankNotes ?? [])];
+  if (d.awaitingFinal) notes.push(`Amount entered by hand when confirming (Mula suggested ${formatMoney(d.amount)}), taken as the final amount`);
+  return { ...input, fxMethod: null, awaitingFinal: false, bankNotes: notes, ...given };
 }
 
 /**

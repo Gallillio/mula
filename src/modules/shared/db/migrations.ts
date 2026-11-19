@@ -1,4 +1,4 @@
-import { SYNC_MIGRATION } from './syncSchema';
+import { SYNC_MIGRATION, outboxTriggersSql } from './syncSchema';
 
 /** Ordered schema migrations; PRAGMA user_version records how many have run. Never edit one that shipped. */
 export const migrations: string[] = [
@@ -188,5 +188,17 @@ export const migrations: string[] = [
   // 4: who you spent it with. A JSON array of payee ids (people), or NULL when it was just you.
   `
   ALTER TABLE transactions ADD COLUMN people TEXT;
+  `,
+  // 5: foreign-currency card charges. How the amount was worked out, whether the bank's final
+  // amount is still to come, and Mula's notes about it. The settings triggers are recreated so the
+  // new synced settings (card mark-ups, foreign merchants billing in EGP) travel too.
+  `
+  ALTER TABLE transactions ADD COLUMN fx_method TEXT;
+  ALTER TABLE transactions ADD COLUMN awaiting_final INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE transactions ADD COLUMN bank_notes TEXT;
+  DROP TRIGGER IF EXISTS sync_settings_ins;
+  DROP TRIGGER IF EXISTS sync_settings_upd;
+  DROP TRIGGER IF EXISTS sync_settings_del;
+  ${outboxTriggersSql({ settings: 'key' })}
   `,
 ];

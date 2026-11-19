@@ -1,4 +1,4 @@
-import type { ID, Minor, Nature, PaymentType, Transaction, TxSource, TxType } from '../../shared/db/types';
+import type { FxMethod, ID, Minor, Nature, PaymentType, Transaction, TxSource, TxType } from '../../shared/db/types';
 
 export type { Transaction, TxType, PaymentType } from '../../shared/db/types';
 
@@ -26,6 +26,12 @@ export type TxInput = {
   debtId?: ID | null;
   /** Payee ids of the people you spent it with. */
   people?: ID[] | null;
+  /** Foreign-currency card charges: how the amount was worked out. Edits that leave it out keep it. */
+  fxMethod?: FxMethod | null;
+  /** Still waiting for the bank's final amount. Edits that leave it out keep it, unless the amount changes. */
+  awaitingFinal?: boolean;
+  /** Mula's notes about the bank's amount. Edits that leave them out keep them. */
+  bankNotes?: string[] | null;
   source?: TxSource;
   sourceRef?: string | null;
 };
@@ -40,6 +46,8 @@ export type TxFilter = {
   debtId?: ID | null;
   /** Records you spent with this person. */
   withPersonId?: ID | null;
+  /** Only records still waiting for (true) or not waiting for (false) the bank's final amount. */
+  awaitingFinal?: boolean | null;
   types?: TxType[] | null;
   search?: string | null;
   from?: number | null;

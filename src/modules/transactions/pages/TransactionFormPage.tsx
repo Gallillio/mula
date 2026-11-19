@@ -24,7 +24,7 @@ import { Numpad, applyNumpadKey, evaluateExpression, type NumpadKey } from '../.
 import { haptic, Press } from '../../shared/components/Press';
 import { SegmentedControl } from '../../shared/components/SegmentedControl';
 import { Text } from '../../shared/components/Text';
-import type { ID, Nature, Payee, PaymentType, Transaction } from '../../shared/db/types';
+import type { FxMethod, ID, Nature, Payee, PaymentType, Transaction } from '../../shared/db/types';
 import { Screen } from '../../shared/layouts/Screen';
 import { goBack } from '../../shared/utils/nav';
 import { getSettings, useSettings, type FeeRule } from '../../shared/settings/settingsStore';
@@ -91,6 +91,12 @@ const MODES: { value: Mode; label: string }[] = [
 const amountExpr = (minor: number) => {
   const v = minor / 100;
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
+};
+
+const FX_METHOD_LABEL: Record<FxMethod, string> = {
+  available_limit: 'Converted at the bank’s own rate: the drop in the card’s available limit',
+  markup: 'Converted at the market rate plus the bank’s usual mark-up',
+  market: 'Converted at the market rate',
 };
 
 function formFromTx(t: Transaction, fee: number, payee: Payee | null, rule: FeeRule, people: Payee[]): Form {
@@ -230,12 +236,18 @@ export default function TransactionFormPage() {
       return;
     }
     if (suggestion?.original && suggestion.original.currency === entryCurrency) return;
+    // A saved record keeps the rate it was booked at (for card charges, the bank's own), so editing
+    // its category or note doesn't re-convert it at today's market rate.
+    if (existing?.fxRate && existing.originalCurrency === entryCurrency && existing.currency === accountCurrency) {
+      setRate(existing.fxRate);
+      return;
+    }
     setRate(null);
     void getRate(entryCurrency, accountCurrency, form.date).then((r) => alive && setRate(r));
     return () => {
       alive = false;
     };
-  }, [entryCurrency, accountCurrency, form.date, suggestion]);
+  }, [entryCurrency, accountCurrency, form.date, suggestion, existing]);
 
   const toAccount = form.toAccountId ? accountById.get(form.toAccountId) : undefined;
   useEffect(() => {
@@ -253,7 +265,14 @@ export default function TransactionFormPage() {
   /* ----- amounts ----- */
   const entered = evaluateExpression(form.expr);
   const enteredMinor = entered != null ? toMinor(entered) : 0;
-  const amount = entryCurrency === accountCurrency ? enteredMinor : rate ? Math.round(enteredMinor * rate) : 0;
+  // The same foreign amount on the same account books exactly what it did before.
+  const keepsBooked = Boolean(existing && existing.originalCurrency === entryCurrency && existing.currency === accountCurrency && existing.originalAmount === enteredMinor);
+  const amount = entryCurrency === accountCurrency ? enteredMinor : keepsBooked && existing ? existing.amount : rate ? Math.round(enteredMinor * rate) : 0;
+  // Typing the account-currency amount of a converted record (the bank's final figure) keeps what was charged.
+  const keptOriginal =
+    existing?.originalAmount && existing.originalCurrency && existing.originalCurrency !== accountCurrency && existing.currency === accountCurrency && entryCurrency === accountCurrency && amount > 0
+      ? { amount: existing.originalAmount, currency: existing.originalCurrency, rate: amount / existing.originalAmount }
+      : null;
   const toAmount = isTransfer && toAccount ? Math.round(amount * (toRate ?? 1)) : null;
   const autoFee = form.mode === 'instapay' ? instapayFee(amount, settings.instapayFee) : 0;
   const fee = form.mode === 'instapay' && form.feeOn ? (form.feeOverride ?? autoFee) : 0;
@@ -326,7 +345,10 @@ export default function TransactionFormPage() {
         isInstapay: form.mode === 'instapay',
         fee,
         natureOverride: form.nature,
-        original: entryCurrency !== accountCurrency && rate ? { amount: enteredMinor, currency: entryCurrency, rate } : null,
+        original:
+          entryCurrency !== accountCurrency && rate
+            ? { amount: enteredMinor, currency: entryCurrency, rate: keepsBooked && existing?.fxRate ? existing.fxRate : rate }
+            : keptOriginal,
         recurringId: form.recurringId,
         debtId: form.debtId,
         people,
@@ -532,6 +554,26 @@ export default function TransactionFormPage() {
             setSheet('note');
           }}
         />
+        {existing && (existing.awaitingFinal || existing.fxMethod || existing.bankNotes.length) ? (
+          <View className="mx-5 my-2 rounded-field bg-sunk px-4 py-3" testID="bank-amount-info">
+            <Text variant="label">{existing.awaitingFinal ? 'Waiting for the bank’s final amount' : 'Bank amount'}</Text>
+            {existing.fxMethod ? (
+              <Text variant="caption" tone="graphite" className="mt-0.5">
+                {FX_METHOD_LABEL[existing.fxMethod]}
+              </Text>
+            ) : null}
+            {existing.bankNotes.map((n, i) => (
+              <Text key={i} variant="caption" tone="graphite" className="mt-1">
+                {n}
+              </Text>
+            ))}
+            {existing.awaitingFinal ? (
+              <Text variant="caption" tone="mist" className="mt-1">
+                Change the amount to the bank’s final figure and this clears.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
         {suggestion?.possibleDuplicate ? (
           <View className="mx-5 my-2 rounded-field bg-alert-soft px-4 py-3">
             <Text variant="label" tone="alert">

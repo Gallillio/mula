@@ -219,6 +219,9 @@ export function txOut(t: Transaction & { feeTotal?: number }, lk: Lookups) {
     ...(t.debtId ? { debt_id: t.debtId } : {}),
     ...(t.recurringId ? { planned_payment_id: t.recurringId } : {}),
     ...(t.parentId ? { fee_of: t.parentId } : {}),
+    ...(t.fxMethod ? { fx_method: t.fxMethod } : {}),
+    ...(t.awaitingFinal ? { awaiting_final_amount: true } : {}),
+    ...(t.bankNotes?.length ? { bank_notes: t.bankNotes } : {}),
     source: t.source,
   };
 }

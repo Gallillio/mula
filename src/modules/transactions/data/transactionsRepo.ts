@@ -4,7 +4,9 @@ import { learnFromUse } from '../../payees/data/payeesRepo';
 import { all, bool, first, int, run, transaction, type Params } from '../../shared/db/client';
 import { useLiveQuery } from '../../shared/db/live';
 import { SYSTEM_CATEGORIES } from '../../shared/db/seeds/categories';
-import type { ID, Nature, PaymentType, Transaction, TxSource, TxType } from '../../shared/db/types';
+import type { FxMethod, ID, Nature, PaymentType, Transaction, TxSource, TxType } from '../../shared/db/types';
+import { formatMoney } from '../../shared/utils/money';
+import { isoDay } from '../../shared/utils/dates';
 import { getSettings, setSetting } from '../../shared/settings/settingsStore';
 import { newId } from '../../shared/utils/id';
 import type { TxFilter, TxInput, TxListItem } from '../types';
@@ -32,6 +34,9 @@ export type TxRow = {
   recurring_id: string | null;
   debt_id: string | null;
   people?: string | null;
+  fx_method?: FxMethod | null;
+  awaiting_final?: number | null;
+  bank_notes?: string | null;
   source: TxSource;
   source_ref: string | null;
   created_at: number;
@@ -54,6 +59,13 @@ export function peopleJson(ids: readonly ID[] | null | undefined): string | null
   const unique = [...new Set((ids ?? []).filter(Boolean))];
   return unique.length ? JSON.stringify(unique) : null;
 }
+
+/** Bank notes are stored one per line. */
+export const parseBankNotes = (raw: string | null | undefined): string[] => (raw ? raw.split('\n').filter((l) => l.trim()) : []);
+export const bankNotesText = (notes: readonly string[] | null | undefined): string | null => {
+  const lines = (notes ?? []).map((n) => n.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+  return lines.length ? lines.join('\n') : null;
+};
 
 /** SQL that is true when the record `alias` lists the person bound to the next `?`. */
 export const withPersonSql = (alias = 't') => `EXISTS (SELECT 1 FROM json_each(COALESCE(${alias}.people, '[]')) WHERE value = ?)`;
@@ -81,6 +93,9 @@ export const rowToTx = (r: TxRow): Transaction => ({
   recurringId: r.recurring_id,
   debtId: r.debt_id,
   people: parsePeople(r.people),
+  fxMethod: r.fx_method ?? null,
+  awaitingFinal: bool(r.awaiting_final ?? 0),
+  bankNotes: parseBankNotes(r.bank_notes),
   source: r.source,
   sourceRef: r.source_ref,
   createdAt: r.created_at,
@@ -99,8 +114,8 @@ async function insertRow(id: ID, t: TxInput, currency: string, baseAmount: numbe
     `INSERT INTO transactions
       (id, type, amount, currency, account_id, to_account_id, to_amount, category_id, payee_id, payment_type, date, note,
        is_instapay, parent_id, nature_override, original_amount, original_currency, fx_rate, base_amount,
-       recurring_id, debt_id, people, source, source_ref, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       recurring_id, debt_id, people, fx_method, awaiting_final, bank_notes, source, source_ref, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       t.type,
@@ -125,6 +140,9 @@ async function insertRow(id: ID, t: TxInput, currency: string, baseAmount: numbe
       t.debtId ?? null,
       // Fee rows belong to their parent record; only the record itself lists people.
       parentId ? null : peopleJson(t.people),
+      parentId ? null : (t.fxMethod ?? null),
+      parentId ? 0 : int(Boolean(t.awaitingFinal)),
+      parentId ? null : bankNotesText(t.bankNotes),
       t.source ?? 'manual',
       t.sourceRef ?? null,
       now,
@@ -178,11 +196,78 @@ export async function updateTransaction(id: ID, t: TxInput): Promise<void> {
     await run('DELETE FROM transactions WHERE id = ?', [id]);
     // Callers that don't mention people (statement imports, older code) keep the record's list.
     const people = t.people === undefined ? (existing?.people ?? null) : t.people;
-    await insertRow(id, { ...t, people, source: existing?.source ?? t.source, sourceRef: existing?.sourceRef ?? t.sourceRef }, account.currency, base, null, now);
+    const settlement = settlementOnEdit(existing, t, account.currency, now);
+    await insertRow(
+      id,
+      { ...t, people, ...settlement, source: existing?.source ?? t.source, sourceRef: existing?.sourceRef ?? t.sourceRef },
+      account.currency,
+      base,
+      null,
+      now,
+    );
     if (existing) await run('UPDATE transactions SET created_at = ? WHERE id = ?', [existing.createdAt, id]);
     await writeFee(id, t, account.currency, now);
   });
   if (t.payeeId) await learnFromUse(t.payeeId, t.type === 'transfer' ? null : (t.categoryId ?? null), t.accountId);
+}
+
+/**
+ * The bank-amount fields after an edit. Callers that don't mention them keep the record's values;
+ * changing the amount of a record still waiting for the bank's final amount means that amount is
+ * now known, so the flag clears and a note keeps what it was.
+ */
+function settlementOnEdit(existing: Transaction | null, t: TxInput, currency: string, now: number): Pick<TxInput, 'fxMethod' | 'awaitingFinal' | 'bankNotes'> {
+  const fxMethod = t.fxMethod === undefined ? (existing?.fxMethod ?? null) : t.fxMethod;
+  const notes = t.bankNotes === undefined ? [...(existing?.bankNotes ?? [])] : [...(t.bankNotes ?? [])];
+  let awaitingFinal = t.awaitingFinal ?? existing?.awaitingFinal ?? false;
+  const amountChanged = existing != null && Math.abs(t.amount) !== existing.amount;
+  if (t.awaitingFinal === undefined && existing?.awaitingFinal && amountChanged) {
+    awaitingFinal = false;
+    notes.push(`${isoDay(now)}: amount changed from ${formatMoney(existing.amount, { currency: existing.currency })} to ${formatMoney(Math.abs(t.amount), { currency })}, taken as the final amount`);
+  }
+  return { fxMethod, awaitingFinal, bankNotes: notes };
+}
+
+/**
+ * Adds a bank's silent posting adjustment to a record without touching anything else: the amount,
+ * its base amount and the rate from the original currency follow, and the note is appended. The
+ * record keeps waiting for the final amount.
+ */
+export async function adjustBankAmount(id: ID, delta: number, note: string): Promise<void> {
+  const t = await getTransaction(id);
+  if (!t) return;
+  const amount = t.amount + delta;
+  if (amount <= 0) throw new Error('A posting adjustment can’t take a record to zero');
+  const base = await toBase(amount, t.currency, t.date);
+  const rate = t.originalAmount ? amount / t.originalAmount : t.fxRate;
+  await transaction(['transactions'], async () => {
+    await run('UPDATE transactions SET amount = ?, base_amount = ?, fx_rate = ?, bank_notes = ?, updated_at = ? WHERE id = ?', [
+      amount,
+      base,
+      rate,
+      bankNotesText([...t.bankNotes, note]),
+      Date.now(),
+      id,
+    ]);
+  });
+}
+
+/** Appends one of Mula's notes about the bank's amount, changing nothing else. */
+export async function appendBankNote(id: ID, note: string): Promise<void> {
+  const t = await getTransaction(id);
+  if (!t) return;
+  await transaction(['transactions'], async () => {
+    await run('UPDATE transactions SET bank_notes = ?, updated_at = ? WHERE id = ?', [bankNotesText([...t.bankNotes, note]), Date.now(), id]);
+  });
+}
+
+/** Records on an account still waiting for the bank's final amount, oldest first. */
+export async function listAwaitingFinal(accountId: ID, before?: number): Promise<Transaction[]> {
+  const rows = await all<TxRow>(
+    `SELECT * FROM transactions WHERE parent_id IS NULL AND awaiting_final = 1 AND account_id = ? ${before != null ? 'AND date < ?' : ''} ORDER BY date ASC, created_at ASC`,
+    before != null ? [accountId, before] : [accountId],
+  );
+  return rows.map(rowToTx);
 }
 
 export async function deleteTransaction(id: ID): Promise<Transaction | null> {
@@ -228,6 +313,7 @@ function filterSql(f: TxFilter): [string, Params] {
     where.push(withPersonSql('t'));
     params.push(f.withPersonId);
   }
+  if (f.awaitingFinal != null) where.push(f.awaitingFinal ? 't.awaiting_final = 1' : 't.awaiting_final = 0');
   if (f.types?.length) {
     where.push(`t.type IN (${f.types.map(() => '?').join(',')})`);
     params.push(...f.types);

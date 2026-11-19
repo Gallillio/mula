@@ -92,6 +92,9 @@ export const readTools: Tool[] = [
           .filter((d) => d.direction === dir)
           .reduce<Record<string, number>>((m, d) => ({ ...m, [d.currency]: (m[d.currency] ?? 0) + (major(d.remaining) ?? 0) }), {});
       const accounts = (await balancesOut(lk)).filter((a) => !a.archived);
+      const awaiting = await all<{ n: number; total: number }>(
+        'SELECT COUNT(*) AS n, COALESCE(SUM(base_amount), 0) AS total FROM transactions WHERE parent_id IS NULL AND awaiting_final = 1',
+      );
       return ok({
         base_currency: lk.base,
         time_zone: lk.tz,
@@ -103,6 +106,9 @@ export const readTools: Tool[] = [
         review_inbox: { waiting: pending.count, oldest: pending.oldest ? formatLocal(pending.oldest, lk.tz) : null },
         upcoming_planned_payments: upcoming,
         debts: { open: debts.length, owed_to_me: owed('lent'), i_owe: owed('borrowed') },
+        ...(awaiting[0]?.n
+          ? { awaiting_final_amount: { records: awaiting[0].n, total: major(awaiting[0].total), how: 'find_transactions with awaiting_final_amount: true' } }
+          : {}),
       });
     },
   },
@@ -172,7 +178,10 @@ export const readTools: Tool[] = [
     title: 'Find transactions',
     description:
       'Searches records (newest first) with totals. Filters combine. Fee rows are folded into their record as "fee". ' +
-      'Use the returned ids with update_transactions or delete_transactions.',
+      'Use the returned ids with update_transactions or delete_transactions. Records can carry fx_method (how a foreign-currency card charge ' +
+      'was converted: available_limit = HSBC’s own EGP hold read from the card’s available limit, markup = market rate + the mark-up in ' +
+      'update_settings, market = market rate), awaiting_final_amount (HSBC still has to post its final amount) and bank_notes (how the amount ' +
+      'was worked out and any silent posting adjustments). awaiting_final_amount: true lists the records to reconcile with the statement.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -184,6 +193,7 @@ export const readTools: Tool[] = [
         uncategorized: { type: 'boolean', description: 'Only expenses/income without a category' },
         payee: { type: 'string', description: 'Payee name or id' },
         with: { type: 'string', description: 'Only records the user spent with this person (name or id)' },
+        awaiting_final_amount: { type: 'boolean', description: 'true: only records still waiting for the bank’s final amount; false: only settled ones' },
         type: { type: 'string', enum: [...TX_TYPES] },
         search: { type: 'string', description: 'Text in the note, payee, category or people’s names' },
         min_amount: { type: 'number', description: 'In the record’s own currency' },
@@ -243,6 +253,8 @@ export const readTools: Tool[] = [
         where.push(withPersonSql('t'));
         params.push(person.id);
       }
+      const awaiting = flag(args.awaiting_final_amount, 'awaiting_final_amount');
+      if (awaiting != null) where.push(awaiting ? 't.awaiting_final = 1' : 't.awaiting_final = 0');
       const search = text(args.search, 'search');
       if (search) {
         where.push(
@@ -413,7 +425,8 @@ export const readTools: Tool[] = [
       'Tables: transactions(id, type expense|income|transfer, amount, currency, account_id, to_account_id, to_amount, category_id, payee_id, ' +
       'payment_type, date, note, is_instapay, parent_id (set on fee rows), nature_override, original_amount, original_currency, fx_rate, ' +
       'base_amount (in the base currency), recurring_id, debt_id, people (JSON array of payee ids the user spent it with, or NULL; ' +
-      'use json_each), source, created_at, updated_at); accounts(id, name, type, currency, ' +
+      'use json_each), fx_method (available_limit|markup|market|NULL), awaiting_final (1 while the bank’s final amount is still to come), ' +
+      'bank_notes (Mula’s notes on the bank’s amount, one per line), source, created_at, updated_at); accounts(id, name, type, currency, ' +
       'initial_balance, identifiers JSON, bank_balance, archived, exclude_from_stats); categories(id, parent_id, name, kind, nature, archived); ' +
       'payees(id, name, kind, default_category_id, default_account_id, auto_confirm); payee_aliases(raw, payee_id); inbox_items(id, source, ' +
       'raw_text, parsed JSON, received_at, status pending|confirmed|dismissed|merged, transaction_id); recurring(...); templates(...); debts(...).',
@@ -477,6 +490,9 @@ export const readTools: Tool[] = [
             ...(s.needsPayee ? { needs_payee: 'InstaPay messages don’t say who received the money' } : {}),
             ...(s.draft.fee ? { fee: major(s.draft.fee) } : {}),
             ...(s.original ? { charged: { amount: major(s.original.amount), currency: s.original.currency, rate: s.original.rate } } : {}),
+            ...(s.draft.fxMethod ? { fx_method: s.draft.fxMethod } : {}),
+            ...(s.draft.awaitingFinal ? { awaiting_final_amount: true } : {}),
+            ...(s.draft.bankNotes?.length ? { bank_notes: s.draft.bankNotes } : {}),
             ...(s.unconverted
               ? { needs_exchange_rate: { amount: major(s.unconverted.amount), currency: s.unconverted.currency, note: 'No rate yet: pass amount in the account’s currency to confirm' } }
               : {}),

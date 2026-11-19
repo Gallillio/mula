@@ -80,6 +80,12 @@ const txFields = {
   instapay: { type: 'boolean', description: 'Sent or received with InstaPay; outgoing ones get the InstaPay fee' },
   fee: { type: 'number', minimum: 0, description: 'A fee to book as its own expense (overrides the InstaPay fee; 0 for none)' },
   nature: { type: 'string', enum: [...NATURES], description: 'Override need/want for this record' },
+  awaiting_final_amount: {
+    type: 'boolean',
+    description:
+      'Whether the bank’s final amount is still to come (a foreign-currency card charge HSBC hasn’t posted yet). Changing amount clears it on its own; ' +
+      'pass false to clear it without changing the amount (it already matches the statement), or true to keep it while adjusting',
+  },
   people: {
     type: ['array', 'null'],
     items: { type: 'string' },
@@ -123,7 +129,12 @@ async function buildTx(item: Record<string, unknown>, lk: Lookups, existing: (Tr
     amount = c.amount;
     original = { amount: typed, currency, rate: c.rate };
   } else if (typed != null) {
-    original = null;
+    // A converted record given its amount in the account's currency (the bank's final figure)
+    // keeps what was charged, with the rate that amount implies.
+    original =
+      existing && existing.originalAmount && existing.originalCurrency && existing.originalCurrency !== account.currency && existing.currency === account.currency
+        ? { amount: existing.originalAmount, currency: existing.originalCurrency, rate: typed / existing.originalAmount }
+        : null;
   }
   if (existing && typed == null && item.account && existing.currency !== account.currency) {
     throw new InputError(`${account.name} is in ${account.currency}; also give the amount in ${account.currency}`);
@@ -177,6 +188,7 @@ async function buildTx(item: Record<string, unknown>, lk: Lookups, existing: (Tr
   const note = item.note === null ? null : (text(item.note, 'note', 1000) ?? existing?.note ?? null);
   const people = (await resolvePeople(item.people, lk)) ?? existing?.people ?? [];
   const natureArg = oneOf(item.nature, 'nature', NATURES);
+  const awaiting = flag(item.awaiting_final_amount, 'awaiting_final_amount');
   return {
     type,
     amount,
@@ -195,6 +207,8 @@ async function buildTx(item: Record<string, unknown>, lk: Lookups, existing: (Tr
     recurringId: existing?.recurringId ?? null,
     debtId: existing?.debtId ?? null,
     people: type === 'transfer' ? [] : people,
+    // Left out, the record keeps its flag unless the amount changes (see updateTransaction).
+    ...(awaiting != null ? { awaitingFinal: awaiting } : {}),
     source: existing?.source ?? 'claude',
     sourceRef: existing?.sourceRef ?? null,
   };
@@ -251,7 +265,10 @@ const transactionTools: Tool[] = [
     title: 'Edit transactions',
     description:
       'Changes existing records (up to 200 per call, e.g. re-categorize every Uber ride). Give each record’s id and only the fields to change; ' +
-      'use null for note or payee to clear them. Changing an InstaPay amount recalculates its fee. people replaces who it was spent with.',
+      'use null for note or payee to clear them. Changing an InstaPay amount recalculates its fee. people replaces who it was spent with. ' +
+      'Foreign-currency card charges: give the bank’s final amount as amount in the account’s currency (no currency); the charged amount ' +
+      '(entered_as) is kept and the rate follows. Changing the amount clears awaiting_final_amount and adds a bank note; pass ' +
+      'awaiting_final_amount false to clear the flag when the amount already matches the statement.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -337,7 +354,8 @@ const reviewTool: Tool = {
   description:
     'Confirms, dismisses or links items from list_review_inbox (up to 100 per call). Confirm files the suggestion, with any fields ' +
     'you override (same fields as add_transactions, including people for who the user spent it with); outgoing InstaPay needs a payee. A new name for a bank name is remembered for next time ' +
-    'unless remember_name is false. Link marks an item as already recorded by an existing transaction.',
+    'unless remember_name is false. Link marks an item as already recorded by an existing transaction. Confirming keeps the suggestion’s ' +
+    'fx_method, awaiting_final_amount and bank_notes; passing a different amount means it is final and clears the flag.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -455,6 +473,9 @@ function draftAsTx(d: TxInput, currency: string): Transaction {
     recurringId: d.recurringId ?? null,
     debtId: d.debtId ?? null,
     people: d.people ?? [],
+    fxMethod: d.fxMethod ?? null,
+    awaitingFinal: Boolean(d.awaitingFinal),
+    bankNotes: d.bankNotes ?? [],
     source: d.source ?? 'sms',
     sourceRef: d.sourceRef ?? null,
     createdAt: Date.now(),
@@ -1113,7 +1134,10 @@ const debtsTool: Tool = {
 const settingsTool: Tool = {
   name: 'update_settings',
   title: 'Update Mula settings',
-  description: 'Changes the InstaPay fee rule (percent of the amount, with a minimum and maximum) or how close in time an Apple Pay entry must be to its bank message to be merged.',
+  description:
+    'Changes the InstaPay fee rule (percent of the amount, with a minimum and maximum), how close in time an Apple Pay entry must be to its bank ' +
+    'message to be merged, the bank’s mark-up on foreign-currency card charges (used when the card’s available limit can’t give the amount), ' +
+    'and the merchants abroad that bill in EGP (their charges wait for the bank’s final amount). Call it with no fields to see the current values.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1121,6 +1145,19 @@ const settingsTool: Tool = {
       instapay_fee_min: { type: 'number', minimum: 0 },
       instapay_fee_max: { type: 'number', minimum: 0 },
       merge_window_minutes: { type: 'integer', minimum: 1, maximum: 120 },
+      fx_markup_percent: {
+        type: 'object',
+        additionalProperties: { type: ['number', 'null'], minimum: 0, maximum: 20 },
+        description:
+          'Mark-up in percent by currency code, merged into the current table, e.g. {"USD": 3, "GBP": 6, "other": 3}. "other" covers currencies ' +
+          'without their own entry; null removes an entry. Defaults: USD 3, GBP 6, other 3',
+      },
+      foreign_egp_merchants: {
+        type: 'array',
+        items: { type: 'string', minLength: 2, maxLength: 60 },
+        maxItems: 50,
+        description: 'Replaces the list: text found in the bank’s merchant name (case-insensitive), e.g. ["REGUS"]',
+      },
     },
     additionalProperties: false,
   },
@@ -1137,16 +1174,60 @@ const settingsTool: Tool = {
     if (rule.max < rule.min) throw new InputError('instapay_fee_max must be at least instapay_fee_min');
     const window = args.merge_window_minutes != null ? Math.round(Number(args.merge_window_minutes)) : s.mergeWindowMinutes;
     const feeChanged = args.instapay_fee_percent != null || args.instapay_fee_min != null || args.instapay_fee_max != null;
+    const markup = markupTable(args.fx_markup_percent, s.cardFxMarkup);
+    const merchants = merchantList(args.foreign_egp_merchants);
     return changed('update_settings', async () => {
       if (feeChanged) await setSetting('instapayFee', rule);
       if (window !== s.mergeWindowMinutes) await setSetting('mergeWindowMinutes', window);
+      if (markup) await setSetting('cardFxMarkup', markup);
+      if (merchants) await setSetting('foreignEgpMerchants', merchants);
+      const fxMarkup = markup ?? s.cardFxMarkup;
+      const foreign = merchants ?? s.foreignEgpMerchants;
       return {
-        value: { instapay_fee: { percent: rule.percent, min: major(rule.min), max: major(rule.max) }, merge_window_minutes: window },
-        summary: `Settings: InstaPay fee ${rule.percent}% (${major(rule.min)}–${major(rule.max)}), merge window ${window} min`,
+        value: {
+          instapay_fee: { percent: rule.percent, min: major(rule.min), max: major(rule.max) },
+          merge_window_minutes: window,
+          fx_markup_percent: fxMarkup,
+          foreign_egp_merchants: foreign,
+        },
+        summary: `Settings: InstaPay fee ${rule.percent}% (${major(rule.min)}–${major(rule.max)}), merge window ${window} min, card FX mark-up ${Object.entries(fxMarkup)
+          .map(([k, v]) => `${k} ${v}%`)
+          .join(', ')}, foreign EGP merchants ${foreign.join(', ') || 'none'}`,
       };
     });
   },
 };
+
+/** The mark-up table after Claude's changes, or null when it didn't mention it. */
+function markupTable(v: unknown, current: Record<string, number>): Record<string, number> | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) throw new InputError('fx_markup_percent must be an object like {"USD": 3, "GBP": 6, "other": 3}');
+  const next: Record<string, number> = { ...current };
+  for (const [rawKey, value] of Object.entries(v as Record<string, unknown>)) {
+    const key = rawKey.trim().toLowerCase() === 'other' ? 'other' : rawKey.trim().toUpperCase();
+    if (key !== 'other' && !/^[A-Z]{3}$/.test(key)) throw new InputError(`fx_markup_percent: "${rawKey}" must be a currency code like USD, or "other"`);
+    if (value === null) {
+      delete next[key];
+      continue;
+    }
+    const n = Number(value);
+    if (typeof value !== 'number' || !Number.isFinite(n) || n < 0 || n > 20) throw new InputError(`fx_markup_percent.${key} must be a number from 0 to 20`);
+    next[key] = n;
+  }
+  return next;
+}
+
+function merchantList(v: unknown): string[] | null {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) throw new InputError('foreign_egp_merchants must be a list of names, e.g. ["REGUS"]');
+  if (v.length > 50) throw new InputError('foreign_egp_merchants can have at most 50 names');
+  const names = v.map((x, i) => {
+    const t = text(x, `foreign_egp_merchants[${i}]`, 60);
+    if (!t || t.length < 2) throw new InputError(`foreign_egp_merchants[${i}] must be at least 2 characters`);
+    return t.toUpperCase();
+  });
+  return [...new Set(names)];
+}
 
 const undoTool: Tool = {
   name: 'undo_claude_change',

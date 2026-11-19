@@ -27,7 +27,7 @@ export const SYNCED_TABLE_NAMES = Object.keys(SYNCED_TABLES) as SyncedTable[];
 export const isSyncedTable = (t: unknown): t is SyncedTable => typeof t === 'string' && Object.prototype.hasOwnProperty.call(SYNCED_TABLES, t);
 
 /** Settings that describe the data. Everything else (theme, reminders, the relay itself) is per device. */
-export const SYNCED_SETTINGS = ['baseCurrency', 'instapayFee', 'mergeWindowMinutes', 'timeZone'] as const;
+export const SYNCED_SETTINGS = ['baseCurrency', 'instapayFee', 'mergeWindowMinutes', 'timeZone', 'cardFxMarkup', 'foreignEgpMerchants'] as const;
 
 /** Milliseconds since the epoch, inside SQLite. */
 export const NOW_MS_SQL = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
